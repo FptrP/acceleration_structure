@@ -1,0 +1,96 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+const float REPROJECT_BIAS = 0.001;
+const float MAX_SAMPLES = 255.f;
+
+layout(set = 0, binding = 0) uniform sampler2D current_depth;
+layout(set = 0, binding = 1) uniform sampler2D prev_depth;
+layout(set = 0, binding = 2) uniform sampler2D current_ao;
+layout(set = 0, binding = 3, rg8) uniform image2D accumulated_ao;
+layout(set = 0, binding = 4) uniform sampler2D velocity_tex;
+layout(set = 0, binding = 5) uniform sampler2D accumulated_history;
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+layout (set = 0, binding = 6) uniform ReprojectParams {
+  mat4 inverse_camera;
+  mat4 prev_inverse_camera;
+  mat4 mvp;
+  vec4 fovy_aspect_znear_zfar;
+};
+
+layout (push_constant) uniform PushConstants {
+  uint clear_history;
+};
+
+vec3 reconstruct_world_pos(in sampler2D depth_tex, in mat4 inverse_camera, in vec2 screen_uv);
+
+void main() {
+  ivec2 tex_size = ivec2(imageSize(accumulated_ao));
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (all(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+  vec2 velocity = texture(velocity_tex, screen_uv).xy;
+  vec2 prev_uv = screen_uv + velocity;
+  bool reprojected = false;
+  float valid_samples = 1.0;
+  if (all(greaterThanEqual(prev_uv, vec2(0, 0))) && all(lessThanEqual(prev_uv, vec2(1, 1)))) {
+    vec3 v_world_cur = reconstruct_world_pos(current_depth, inverse_camera, screen_uv);
+    vec3 v_world_prev = reconstruct_world_pos(prev_depth, prev_inverse_camera, prev_uv);
+
+    vec4 prev_ndc = mvp * vec4(v_world_prev, 1.0);
+    prev_ndc /= prev_ndc.w;
+
+    vec2 prev_world_uv = 0.5 * prev_ndc.xy + vec2(0.5, 0.5);
+    vec2 delta = abs(prev_world_uv - screen_uv) * tex_size;
+  
+    const float znear = fovy_aspect_znear_zfar.z;
+    const float zfar = fovy_aspect_znear_zfar.w;
+
+    float current_z = linearize_depth2(texture(current_depth, screen_uv).x, znear, zfar);
+    float prev_z = linearize_depth2(prev_ndc.z, znear, zfar);
+    //float depth_err = abs((prev_z - current_z)/current_z);
+    float depth_err = abs((prev_z - current_z));
+
+    const float MAX_REPROJECTION_EPS = 0.1;
+    const float MIN_REPROJECTION_EPS = 0.01;
+  
+    float velocity_len = length(velocity);
+    float vel_delta = max(abs(velocity.x) * tex_size.x, abs(velocity.y) * tex_size.y);
+
+    float error = 0.1 * vel_delta + depth_err;
+    valid_samples = clamp(1 - error, 0.8, 1);
+    reprojected = (max(delta.x, delta.y) <= 2.0) && (depth_err < 0.2);
+  }
+
+  float new_ao = texelFetch(current_ao, pixel_pos, 0).r;
+  float computed_ao = new_ao;
+  float samples_count = 1.f;
+
+  if (clear_history != 0)
+    reprojected = false;
+
+  if (reprojected) {
+    vec2 accumulated = texture(accumulated_history, prev_uv).xy;
+    samples_count = 255.f * accumulated.y * valid_samples;
+
+    computed_ao = (accumulated.x * samples_count + new_ao)/(samples_count + 1.f);
+    samples_count += 1.f;
+    if (samples_count > MAX_SAMPLES) {
+      samples_count = 100.f;
+    } 
+  }
+
+  imageStore(accumulated_ao, pixel_pos, vec4(clamp(computed_ao, 0, 1), samples_count/255.f, 0.f, 0.f));
+}
+
+vec3 reconstruct_world_pos(in sampler2D depth_tex, in mat4 inverse_camera, in vec2 screen_uv) {
+  float d = texture(depth_tex, screen_uv).x;
+  vec3 v_camera = reconstruct_view_vec(screen_uv, d, fovy_aspect_znear_zfar.x, fovy_aspect_znear_zfar.y, fovy_aspect_znear_zfar.z, fovy_aspect_znear_zfar.w);
+  vec4 v_world = inverse_camera * vec4(v_camera, 1.0);
+  return v_world.xyz;
+}

@@ -1,0 +1,103 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+
+#include <gbuffer_encode.glsl>
+
+#define PI 3.1415926535897932384626433832795
+
+layout (set = 0, binding = 0) uniform GTAORTParams {
+  mat4 camera_to_world;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout (set = 0, binding = 1) uniform sampler2D depth;
+layout (set = 0, binding = 2) uniform sampler2D gbuffer_normal;
+layout (set = 0, binding = 3) uniform accelerationStructureEXT tlas;
+layout (set = 0, binding = 4, r8) uniform writeonly image2D out_gtao;
+
+const int DIRECTION_COUNT = 64; 
+
+layout (set = 0, binding = 5) uniform RandomVectors {
+  vec3 ao_directions[DIRECTION_COUNT];
+};
+
+layout (push_constant) uniform PushConsts {
+  float rotation;
+};
+
+
+float get_visibility(in vec3 world_pos, in vec3 dir) {
+  rayQueryEXT ray_query;
+	rayQueryInitializeEXT(ray_query, tlas, 0, 0xFF, world_pos, 1e-6, dir, 1.0);
+  while (rayQueryProceedEXT(ray_query)) {}
+
+  float visibility = 1.f;
+  if (rayQueryGetIntersectionTypeEXT(ray_query, true) == gl_RayQueryCommittedIntersectionTriangleEXT) {
+    visibility = 0.f;
+  }
+
+  return visibility;
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
+
+float gtao_direction(in ivec2 pos) {
+  return (1.0 / 16.0) * ((((pos.x + pos.y) & 3) << 2) + (pos.x & 3));
+}
+
+layout (local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  float frag_depth = texture(depth, screen_uv).r;
+  if (frag_depth >= 1.f) {
+    imageStore(out_gtao, ivec2(pixel_pos), vec4(1, 0, 0, 0));
+    return;
+  }
+  
+  vec3 view_vec = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
+  vec3 world_pos = (camera_to_world * vec4(view_vec, 1)).xyz;
+  
+  vec3 normal = decode_normal(texture(gbuffer_normal, screen_uv).xy);
+  world_pos += 1e-5 * normal;
+
+  vec3 tangent = get_tangent(normal);
+  vec3 bitangent = normalize(cross(normal, tangent));
+  tangent = normalize(cross(bitangent, tangent));
+  
+  //rotate basis
+  float angle = 2 * PI * (rotation + gtao_direction(pixel_pos));
+  tangent = cos(angle) * tangent + sin(angle) * bitangent;
+  bitangent = normalize(cross(normal, tangent));
+
+  float sum = 0.f;
+
+  for (int i = 0; i < DIRECTION_COUNT; i++) {
+    vec3 dir = normalize(ao_directions[i]);
+    dir = 0.2 * normalize(dir.z * normal + dir.x * tangent + dir.y * bitangent);
+
+    sum += get_visibility(world_pos, dir);
+  }
+
+  sum /= DIRECTION_COUNT;
+
+  imageStore(out_gtao, ivec2(pixel_pos), vec4(sum, 0, 0, 0));
+}

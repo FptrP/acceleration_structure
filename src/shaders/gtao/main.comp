@@ -1,0 +1,282 @@
+#version 460
+#include <gbuffer_encode.glsl>
+#include <brdf.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D depth;
+
+layout (set = 0, binding = 1) uniform GTAOParams {
+  mat4 normal_mat;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout (set = 0, binding = 2) uniform sampler2D gbuffer_normal;
+layout (set = 0, binding = 3) uniform sampler2D gbuffer_material;
+layout (set = 0, binding = 4) uniform sampler2D pdf;
+layout (set = 0, binding = 5, rgba16f) uniform image2D gtao_out;
+
+layout (push_constant) uniform PushConstants {
+  float angle_offset;
+  float weight_ratio;
+  uint use_mis;
+  uint two_directions;
+  uint reflections_only;
+};
+
+#define USE_SAMPLES_TRACE 0
+#define START_X 0.5 - 1e-6
+#define START_Y 0.5 - 1e-6
+#define END_X 0.5 + 8.0/1920.0
+#define END_Y 0.5 + 4.0/1920.0
+#include "trace_samples.glsl"
+
+#define RADIUS 0.01
+#define SAMPLES 20
+#define THIKNESS 0.05
+
+#define UNIFORM_AO 0
+#define COS_AO 1
+
+#define AO_MODE COS_AO
+
+#define PI 3.1415926535897932384626433832795
+
+float gtao_direction(in ivec2 pos);
+float gtao_direction_2x2(in ivec2 pos);
+float gtao_normal_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count);
+float gtao_camera_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count);
+vec2 mis_gtao(in ivec2 pos, in vec2 screen_uv);
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+  vec2 occlusion = vec2(0, 1/(2 * PI));
+  
+  if (use_mis > 0) {
+    occlusion = mis_gtao(pixel_pos, screen_uv);
+  } else {
+    occlusion.x = gtao_camera_space(pixel_pos, screen_uv, (two_directions != 0)? 2 : 1);
+  } 
+  
+  imageStore(gtao_out, pixel_pos, vec4(occlusion, 0.f, 0.f));
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
+
+const float MAX_THIKNESS = 0.1;
+
+float find_horizon(in vec2 start, in vec3 camera_start, in vec2 dir, int samples_count, in vec3 v) {
+  float h_cos = -1.0;
+  float previous_z = camera_start.z;
+
+  for (int i = 1; i <= samples_count; i++) {
+    vec2 tc = start + (float(i)/samples_count) * dir;
+    float sample_depth = textureLod(depth, tc, 0).r;
+    TRACE_SAMPLE_UV(start, tc);
+
+    vec3 sample_pos = reconstruct_view_vec(tc, sample_depth, fovy, aspect, znear, zfar);
+    
+    if (sample_pos.z > previous_z + MAX_THIKNESS) {
+      break;
+    }
+
+    previous_z = sample_pos.z;
+    vec3 sample_offset = sample_pos - camera_start;
+
+    float sample_cos = dot(v, normalize(sample_offset));
+    if (sample_cos > h_cos) {
+      h_cos = sample_cos;
+    }
+  }
+  return h_cos;
+}
+
+float find_horizon_pos(in vec2 start, in vec3 camera_start, in vec2 dir, int samples_count, in vec3 v, inout vec3 delta) {
+  float h_cos = -1.0;
+  float previous_z = camera_start.z;
+
+  for (int i = 1; i <= samples_count; i++) {
+    vec2 tc = start + (float(i)/samples_count) * dir;
+    float sample_depth = textureLod(depth, tc, 0).r;
+    TRACE_SAMPLE_UV(start, tc);
+
+    vec3 sample_pos = reconstruct_view_vec(tc, sample_depth, fovy, aspect, znear, zfar);
+    
+    if (sample_pos.z > previous_z + MAX_THIKNESS) {
+      break;
+    }
+
+    previous_z = sample_pos.z;
+    vec3 sample_offset = sample_pos - camera_start;
+    delta = normalize(sample_offset);
+
+    float sample_cos = dot(v, delta);
+    if (sample_cos > h_cos) {
+      h_cos = sample_cos;
+    }
+  }
+  return h_cos;
+}
+
+vec2 tex_derivatives(ivec2 pos, vec2 tex_size) {
+  pos = ivec2(pos.x & 1, pos.y & 1);
+  pos = -2 * pos + ivec2(1);
+  return vec2(pos)/tex_size;
+}
+
+float gtao_normal_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count) {
+  float frag_depth = texture(depth, screen_uv).r;
+  if (frag_depth >= 1.f) {
+    return 1.f;
+  }
+
+  vec3 camera_pos = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
+  vec3 w0 = -normalize(camera_pos);
+  
+  vec2 gradient = tex_derivatives(pos, textureSize(gbuffer_normal, 0).xy);
+  vec2 raw_normal = textureGrad(gbuffer_normal, screen_uv, vec2(gradient.x, 0), vec2(0, gradient.y)).xy;
+  //vec3 world_normal = decode_normal(raw_normal);
+
+  vec3 camera_normal = normalize((normal_mat * vec4(decode_normal(raw_normal), 0)).xyz);
+  vec3 tangent = get_tangent(camera_normal);
+  vec3 bitangent = normalize(cross(camera_normal, tangent));
+  tangent = normalize(cross(bitangent, camera_normal));
+
+  float base_angle = gtao_direction(pos) + angle_offset; 
+
+  vec2 dir_radius = min(200.0/length(camera_pos), 32.0) / vec2(textureSize(depth, 0));
+  
+  float sum = 0.f;
+
+  for (int dir_index = 0; dir_index < dirs_count; dir_index++) {
+    float angle = 2 * PI * (base_angle + float(dir_index)/float(dirs_count));
+
+    vec3 sample_vector = cos(angle) * tangent + sin(angle) * bitangent;
+    vec2 sample_direction = project_view_vec(camera_pos + sample_vector, fovy, aspect, znear, zfar).xy - screen_uv;
+    sample_direction = dir_radius * normalize(sample_direction);
+
+    vec3 delta;
+    
+    float h_cos = find_horizon(screen_uv, camera_pos, sample_direction, SAMPLES, camera_normal);
+    
+    h_cos = max(h_cos, 0);
+    sum += (1 - h_cos * h_cos);
+  }
+
+  return sum/float(dirs_count); 
+}
+
+float gtao_camera_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count) {
+  float frag_depth = texture(depth, screen_uv).r;
+  if (frag_depth >= 1.f) {
+    return 0.f;
+  }
+
+  vec3 camera_pos = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
+  vec3 w0 = -normalize(camera_pos);
+  vec3 camera_normal = normalize((normal_mat * vec4(decode_normal(texture(gbuffer_normal, screen_uv).xy), 0)).xyz);
+
+  vec2 dir_radius = min(100.0/length(camera_pos), 16.0) / vec2(textureSize(depth, 0));
+  float base_angle = gtao_direction(pos) + angle_offset; 
+  float sum = 0.f;
+
+  for (int dir_index = 0; dir_index < dirs_count; dir_index++) {
+    float angle = 2 * PI * (base_angle + float(dir_index)/float(dirs_count));
+
+    vec2 sample_direction = dir_radius * vec2(cos(angle), sin(angle));
+    vec3 sample_end_pos = reconstruct_view_vec(screen_uv + sample_direction, frag_depth, fovy, aspect, znear, zfar);
+
+    vec3 slice_normal = normalize(cross(w0, -sample_end_pos));
+    vec3 normal_projected = camera_normal - dot(camera_normal, slice_normal) * slice_normal;
+    vec3 X = -normalize(cross(slice_normal, w0));
+    float n = PI/2.0 - acos(dot(normalize(normal_projected), X));
+
+    float h_cos = find_horizon(screen_uv, camera_pos, sample_direction, 16, w0);
+    float h = acos(h_cos);
+    h = min(n + min(h - n, PI/2.0), h);
+    sum += length(normal_projected) * 0.25 * max(-cos(2 * h - n) + cos(n) + 2*h*sin(n), 0);
+  }
+
+  return 2 * sum/float(dirs_count);
+}
+
+vec2 mis_gtao(in ivec2 pos, in vec2 screen_uv) {
+  float frag_depth = texture(depth, screen_uv).r;
+  if (frag_depth >= 1.f) {
+    return vec2(0.f, 1.0);
+  }
+
+  vec3 camera_pos = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
+  vec3 w0 = -normalize(camera_pos);
+  vec3 camera_normal = normalize((normal_mat * vec4(decode_normal(texture(gbuffer_normal, screen_uv).xy), 0)).xyz);
+
+  vec2 dir_radius = min(100.0/length(camera_pos), 16.0) / vec2(textureSize(depth, 0));
+  float base_angle = gtao_direction(pos) + angle_offset; 
+
+  float angle = 2 * PI * base_angle;
+
+  vec2 sample_direction = dir_radius * vec2(cos(angle), sin(angle));
+  vec3 sample_end_pos = reconstruct_view_vec(screen_uv + sample_direction, frag_depth, fovy, aspect, znear, zfar);
+  vec3 L = normalize(sample_end_pos - camera_pos);
+
+  vec3 slice_normal = normalize(cross(w0, -sample_end_pos));
+  vec3 normal_projected = camera_normal - dot(camera_normal, slice_normal) * slice_normal;
+  vec3 X = -normalize(cross(slice_normal, w0));
+  float n = PI/2.0 - acos(dot(normalize(normal_projected), X));
+
+  float h_cos = find_horizon(screen_uv, camera_pos, sample_direction, 16, w0);
+  float h = acos(h_cos);
+  h = min(n + min(h - n, PI/2.0), h);
+  float occlusion = (1.0/PI) * length(normal_projected) * 0.25 * max(-cos(2 * h - n) + cos(n) + 2*h*sin(n), 0);
+
+  float roughness = texture(gbuffer_material, screen_uv).g;
+  float pdf_ggx = sampleGGXdirPDF(pdf, w0, camera_normal, L, roughness*roughness);
+  float pdf_uniform = 1.0/(2 * PI);
+  
+  //const float power = 1.0;
+  //float mis_weight = pow(pdf_uniform, power - 1)/(pow(pdf_uniform, power) + pow(pdf_ggx, power));
+
+  vec2 ao = imageLoad(gtao_out, pos).xy;
+
+  if (reflections_only != 0) {
+    float res = ao.x/ao.y;
+    return vec2(isnan(res)? 1 : res, 1);
+  }
+
+  float alpha = 1/(weight_ratio + 1);
+  float betta = 1 - alpha;
+
+  float mis_weight1 = alpha/(alpha * ao.y + betta * pdf_uniform);
+  float mis_weight2 = betta/(alpha * pdf_ggx + betta * pdf_uniform);
+  //float mis_weight = (1 - 2/5)/(2/5 * pdf_ggx + (1 - 2/5) * pdf_uniform);
+  
+  float mis_ao = ao.x * mis_weight1 + occlusion * mis_weight2;
+
+  float result = mis_ao; //mix(mis_ao, gtao, clamp((NdotV - 0.7) * 10, 0, 1));
+  float total_weight = 1;
+  return vec2((isnan(result))? occlusion/pdf_uniform : mis_ao, total_weight);
+}
+
+float gtao_direction(in ivec2 pos) { // -> full rotation every 4 pixels
+  return (1.0 / 16.0) * ((((pos.x + pos.y) & 3) << 2) + (pos.x & 3));
+}
+
+float gtao_direction_2x2(in ivec2 pos) {
+  return (1.0/4.0) * ((((pos.y + pos.x) & 1) << 1) + (pos.x & 1));
+}

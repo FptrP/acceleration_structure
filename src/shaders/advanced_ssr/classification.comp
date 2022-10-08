@@ -1,0 +1,92 @@
+#version 460 core
+
+layout (set = 0, binding = 0) uniform sampler2D MATERIAL_TEX;
+
+layout (set = 0, binding = 1, std430) buffer REFLECTIVE_TILES {
+  int tiles[];
+} reflective;
+
+layout (set = 0, binding = 2, std430) buffer GLOSSY_TILES {
+  int tiles[];
+} glossy;
+
+layout (set = 0, binding = 3, std430) buffer REFLECTIVE_PARAMS {
+  uint reflective_count;
+  uint reflective_y;
+  uint reflective_z;
+};
+
+layout (set = 0, binding = 4, std430) buffer GLOSSY_PARAMS {
+  uint glossy_count;
+  uint glossy_y;
+  uint glossy_z;
+};
+
+layout (push_constant) uniform PushConstants {
+  ivec2 TEX_SIZE;
+  float g_max_roughness;
+  float g_glossy_value;
+};
+
+#define TILE_SIZE 8
+
+shared float g_roughness[TILE_SIZE * TILE_SIZE];
+
+layout (local_size_x = TILE_SIZE, local_size_y = TILE_SIZE) in;
+void main() {
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(TEX_SIZE);
+
+  const uint thread_id = gl_LocalInvocationID.y * TILE_SIZE + gl_LocalInvocationID.x;
+  
+  float sampled_roughness = 1.f;
+
+  if (pixel_pos.x < TEX_SIZE.x && pixel_pos.y < TEX_SIZE.y) {
+    sampled_roughness = texture(MATERIAL_TEX, screen_uv).g;  
+  }
+
+  sampled_roughness = mix(0, g_max_roughness, sampled_roughness);
+  g_roughness[thread_id] = sampled_roughness;
+
+  barrier();
+  memoryBarrierShared();
+  
+  const uint num_elems = TILE_SIZE * TILE_SIZE;  
+  uint offset = num_elems/2;
+
+#if 0
+  for (int i = 1; i < num_elems; i++) {
+    if (thread_id == 0) {
+      g_roughness[0] += g_roughness[i];
+    }
+  } 
+#else
+  while (offset != 0) {
+    const uint index = thread_id + offset; 
+    if (index < 2 * offset) {
+      g_roughness[thread_id] += g_roughness[index];
+    }
+
+    offset /= 2;
+    barrier();
+    memoryBarrierShared();
+  }
+#endif
+
+  if (thread_id == 0) {
+    float average_roughness = g_roughness[0]/float(num_elems);
+    ivec2 tile_count = (TEX_SIZE + ivec2(TILE_SIZE - 1))/TILE_SIZE;
+    ivec2 tile = (pixel_pos)/TILE_SIZE;
+
+    int tile_index = tile.y * tile_count.x + tile.x;
+    
+    if (average_roughness < g_glossy_value) {
+      uint array_index = atomicAdd(reflective_count, 1);
+      reflective.tiles[array_index] = tile_index;
+    } else {
+      uint array_index = atomicAdd(glossy_count, 1);
+      glossy.tiles[array_index] = tile_index;
+    }
+  }
+
+}

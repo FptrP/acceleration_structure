@@ -1,0 +1,41 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+const float REPROJECT_BIAS = 1e-6;
+const float REPROJECT_COEF = 0.05;
+
+layout(push_constant) uniform ReprojectParams {
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout(set = 0, binding = 0) uniform sampler2D CURRENT_DEPTH;
+layout(set = 0, binding = 1) uniform sampler2D PREV_DEPTH;
+layout(set = 0, binding = 2) uniform sampler2D CURRENT_TEX;
+layout(set = 0, binding = 3, rgba16f) uniform image2D ACCUM_TEX;
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  vec4 new_sum = texelFetch(CURRENT_TEX, pixel_pos, 0);
+  float current_depth = texelFetch(CURRENT_DEPTH, pixel_pos, 0).x;
+  vec3 cur_view = reconstruct_view_vec(screen_uv, current_depth, fovy, aspect, znear, zfar);
+  vec4 out_sum = new_sum;
+
+  float sampled_depth = texelFetch(PREV_DEPTH, pixel_pos, 0).x;
+  vec4 sampled_sum = imageLoad(ACCUM_TEX, pixel_pos);
+
+  float sampled_z = linearize_depth2(sampled_depth, znear, zfar);
+  float delta = abs(sampled_z - cur_view.z);
+  if (delta < REPROJECT_BIAS && sampled_depth < 1.0) {
+    out_sum = mix(sampled_sum, new_sum, REPROJECT_COEF);
+  }
+  
+  imageStore(ACCUM_TEX, ivec2(pixel_pos), out_sum);
+}

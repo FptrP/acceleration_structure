@@ -1,0 +1,268 @@
+#version 460
+#include <screen_trace.glsl>
+#include <brdf.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL;
+layout (set = 0, binding = 2) uniform sampler2D MATERIAL;
+
+layout (set = 0, binding = 3) uniform TraceParams {
+  mat4 normal_mat;
+  uint frame_random;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+#define M_PI 3.1415926535897932384626433832795
+#define HALTON_SEQ_SIZE 128
+
+layout (set = 0, binding = 4) uniform HaltonBuffer {
+  vec4 halton_vec[HALTON_SEQ_SIZE];
+};
+
+layout (push_constant) uniform PushConstants {
+  float max_roughness;
+};
+
+vec3 sampleGGXVNDF(vec3 Ve, float alpha_x, float alpha_y, float U1, float U2);
+vec3 get_tangent(in vec3 n);
+vec3 trace_screen_space_ray(vec3 ray_origin, vec3 ray_dir, float stride, float jitter, float max_steps, out bool valid);
+vec3 hierarchical_raymarch_find_hor(in sampler2D depth_tex, vec3 origin, vec3 direction, int most_detailed_mip, uint max_traversal_intersections, out bool valid_hit, in vec3 w0, in vec3 camera_start, inout float h);
+
+layout (set = 0, binding = 5, rgba16) uniform image2D OUT_RAY;
+layout (set = 0, binding = 6, rgba16f) uniform image2D OUT_OCCLUSION;
+
+layout (set = 0, binding = 7) uniform sampler2D PDF_TEX;
+
+float rand(vec2 co);
+
+layout (local_size_x = 8, local_size_y = 8) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_RAY);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (pixel_pos.x >= tex_size.x || pixel_pos.y >= tex_size.y) {
+    return;
+  }
+  vec3 material = texture(MATERIAL, screen_uv).rgb;
+
+  float roughness = material.g;
+  material.g = mix(0.0, max_roughness, roughness);
+  roughness = material.g * material.g;
+
+  float pixel_depth = texture(DEPTH, screen_uv).x;
+  vec3 pixel_normal_world = sample_gbuffer_normal(NORMAL, screen_uv);
+  vec3 pixel_normal = normalize((normal_mat * vec4(pixel_normal_world, 0)).xyz);
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+
+  //halton random
+  const uint base_index = uint(rand(screen_uv) * HALTON_SEQ_SIZE);
+  uint index = (base_index + frame_random) & (HALTON_SEQ_SIZE - 1);
+  vec2 rnd = halton_vec[index].xy;
+  //sample microphaset normal 
+  vec3 tangent = get_tangent(pixel_normal);
+  vec3 bitangent = normalize(cross(pixel_normal, tangent));
+  tangent = normalize(cross(bitangent, pixel_normal));
+
+  vec3 view_dir = -normalize(view_vec); //e = (tangent, bitangent, normal)
+  view_dir = vec3(
+    dot(view_dir, tangent),
+    dot(view_dir, bitangent),
+    dot(view_dir, pixel_normal));
+
+  vec3 brdf_norm = sampleGGXVNDF(view_dir, roughness, roughness, rnd.x, rnd.y);
+  vec3 N = brdf_norm.x * tangent + brdf_norm.y * bitangent + brdf_norm.z * pixel_normal;
+  vec3 R = reflect(view_vec, N); 
+  //
+  vec3 ray_start = project_view_vec(view_vec + 0.001 * pixel_normal, fovy, aspect, znear, zfar);
+  ray_start.z -= 0.0001;
+
+  vec3 ray_dir = project_view_vec(view_vec + R, fovy, aspect, znear, zfar);
+  ray_dir -= ray_start;
+  ray_dir *= (1-ray_start.z)/ray_dir.z;
+
+  bool valid_hit = false;
+
+  float h = -1.0;
+  vec3 w0 = -normalize(view_vec);
+
+  vec3 out_ray = hierarchical_raymarch_find_hor(DEPTH, ray_start, ray_dir, 0, 80, valid_hit, pixel_normal, view_vec, h);
+  vec4 out_ray_info = vec4(0, 0, 1, 1);
+
+  if (valid_hit) {
+    vec2 ray_step = abs(out_ray.xy - ray_start.xy) * tex_size;
+    if (max(ray_step.x, ray_step.y) < 2.0) {
+      valid_hit = false;
+    }
+  }
+  
+  if (valid_hit)
+  {
+    vec3 hit_normal_world = sample_gbuffer_normal(NORMAL, out_ray.xy);
+    vec3 hit_normal = (normal_mat * vec4(hit_normal_world, 0)).xyz;
+
+    if (dot(hit_normal, R) > 0 || dot(pixel_normal, R) < 0) {
+      valid_hit = false;
+    }
+  }
+
+  if (valid_hit) {  
+    float hit_depth = textureLod(DEPTH, out_ray.xy, 0).x;
+    float hit_z = linearize_depth2(hit_depth, znear, zfar);
+    float ray_z = linearize_depth2(out_ray.z, znear, zfar);
+    if (ray_z > hit_z + 0.3 || ray_z < hit_z - 0.1) {
+      valid_hit = false;
+    }
+  }
+
+  out_ray_info = vec4(out_ray, valid_hit? pixel_depth : 1.0);
+  imageStore(OUT_RAY, pixel_pos, out_ray_info);
+
+  {
+    vec3 slice_normal = normalize(cross(w0, R));
+    vec3 normal_projected = pixel_normal - dot(pixel_normal, slice_normal) * slice_normal;
+    vec3 X = normalize(cross(slice_normal, w0));
+    float n = PI/2.0 - acos(dot(normalize(normal_projected), X));
+
+    bool no_occlusion = h == -1.0;
+    h = acos(h);
+    h = min(n + min(h - n, PI/2.0), h);
+    
+    float pdf = sampleGGXdirPDF(PDF_TEX, w0, pixel_normal, R, roughness);
+    float occlusion = (1.0/PI) * length(normal_projected) * 0.25 * max(-cos(2 * h - n) + cos(n) + 2*h*sin(n), 0);
+    float result = occlusion;
+    result = isnan(result)? 0.0 : result;
+    
+    imageStore(OUT_OCCLUSION, pixel_pos, vec4(no_occlusion? 0.0 : result, no_occlusion? 0 : pdf, 0, 0));
+  }
+
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
+
+float rand(vec2 co){
+  return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+float distance_squared(vec3 a, vec3 b) {
+  vec3 c = b - a;
+  return dot(c, c);
+}
+
+vec3 trace_screen_space_ray(vec3 ray_origin, vec3 ray_dir, float stride, float jitter, float max_steps, out bool valid) {
+  vec3 tex_size = vec3(vec2(textureSize(DEPTH, 0)), 1.0); 
+  vec3 P0 = tex_size * ray_origin;
+  vec3 P1 = tex_size * (ray_origin + ray_dir);
+  P1.xy += vec2((distance_squared(P0, P1) < 0.0001) ? 0.01 : 0.0);
+
+  vec3 delta = P1 - P0;
+  bool permute = false;
+  
+  if (abs(delta.x) < abs(delta.y)) {
+    delta = delta.yxz;
+    P0 = P0.yxz;
+    P1 = P1.yxz;
+    permute = true;
+  }
+
+  float step_dir = sign(delta.x);
+  float invdx = step_dir/delta.x;
+  
+  vec3 dP = vec3(step_dir, delta.y * invdx, delta.z * invdx);
+  dP *= stride;
+  P0 += dP * jitter;
+
+  float end_x = P1.x * step_dir;
+  float steps_count = 0.0;
+
+  for (vec3 P = P0; (P.x * step_dir <= end_x) && (steps_count < max_steps); P += dP, steps_count += 1.0) {
+    vec3 hit_pixel = permute? P.yxz : P.xyz;
+    float sampled_depth = texelFetch(DEPTH, ivec2(hit_pixel.xy), 0).x;
+
+    if (hit_pixel.z > sampled_depth) {
+      valid = true;
+      return hit_pixel/tex_size;    
+    }
+
+  }
+
+  valid = false;
+  return vec3(0, 0, 0);
+}
+
+vec3 hierarchical_raymarch_find_hor(in sampler2D depth_tex, vec3 origin, vec3 direction, int most_detailed_mip, uint max_traversal_intersections, out bool valid_hit, in vec3 w0, in vec3 camera_start, inout float h) {
+  //const vec3 inv_direction = direction != 0 ? 1.0 / direction : vec3(MAX_T_FLOAT);
+  
+  const vec3 inv_direction = vec3(
+    direction.x != 0 ? 1.0 / direction.x : MAX_T_FLOAT,
+    direction.y != 0 ? 1.0 / direction.y : MAX_T_FLOAT,
+    direction.z != 0 ? 1.0 / direction.z : MAX_T_FLOAT);
+  
+  // Start on mip with highest detail.
+  int current_mip = most_detailed_mip;
+
+    // Could recompute these every iteration, but it's faster to hoist them out and update them.
+  vec2 screen_size = textureSize(depth_tex, 0);
+  vec2 current_mip_resolution = get_mip_resolution(screen_size, current_mip);
+  vec2 current_mip_resolution_inv = 1.0/current_mip_resolution;
+
+    // Offset to the bounding boxes uv space to intersect the ray with the center of the next pixel.
+    // This means we ever so slightly over shoot into the next region. 
+  vec2 uv_offset = 0.005 * exp2(most_detailed_mip) / screen_size;
+  //uv_offset = direction.xy < 0 ? -uv_offset : uv_offset;
+  uv_offset.x = direction.x < 0 ? -uv_offset.x : uv_offset.x;
+  uv_offset.y = direction.y < 0 ? -uv_offset.y : uv_offset.y;
+
+  // Offset applied depending on current mip resolution to move the boundary to the left/right upper/lower border depending on ray direction.
+  //vec2 floor_offset = direction.xy < 0 ? 0 : 1;
+  vec2 floor_offset = vec2(direction.x < 0 ? 0 : 1, direction.y < 0 ? 0 : 1);
+  
+  float prev_z = camera_start.z;
+
+    // Initially advance ray to avoid immediate self intersections.
+  float current_t;
+  vec3 position;
+  initial_advance_ray(origin, direction, inv_direction, current_mip_resolution, current_mip_resolution_inv, floor_offset, uv_offset, position, current_t);
+  h = 0;
+  int i = 0;
+  while (i < max_traversal_intersections && current_mip >= most_detailed_mip) {
+    vec2 current_mip_position = current_mip_resolution * position.xy;
+    float surface_z = texelFetch(depth_tex, ivec2(current_mip_position), current_mip).x;
+    bool skipped_tile = advance_ray(origin, direction, inv_direction, current_mip_position, current_mip_resolution_inv, floor_offset, uv_offset, surface_z, position, current_t);
+    bool mip0sample = i < 15;
+
+    current_mip += mip0sample? 0 : (skipped_tile ? 1 : -1);
+    current_mip_resolution *= mip0sample? 1 : (skipped_tile ? 0.5 : 2);
+    current_mip_resolution_inv *= mip0sample? 1 : (skipped_tile ? 2 : 0.5);
+    ++i;
+    
+    
+    vec3 v = reconstruct_view_vec(position.xy, surface_z, fovy, aspect, znear, zfar) - camera_start;
+    if (current_mip <= 1) {
+      float h2 = dot(w0, normalize(v));
+      float c = clamp(20 * (1.5 - length(v)), 0, 1); 
+      if (length(v) < 0.3)
+        h = max(h, h2);
+      /*if (h2 > h)
+        h = mix(h, h2, c);
+      h = mix(h, h2, 0.1 * c);*/
+    }
+  }
+
+  valid_hit = (i <= max_traversal_intersections);
+
+  return position;
+}

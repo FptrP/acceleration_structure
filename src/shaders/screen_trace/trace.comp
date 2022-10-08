@@ -1,0 +1,344 @@
+#version 460
+#include <gbuffer_encode.glsl>
+#include <screen_trace.glsl>
+#include <brdf.glsl>
+const int TILE_SIZE = 8;
+const int THREAD_COUNT = TILE_SIZE * TILE_SIZE; 
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL_TEX;
+layout (set = 0, binding = 2) uniform sampler2D COLOR_TEX;
+layout (set = 0, binding = 3) uniform sampler2D MATERIAL_TEX;
+layout (set = 0, binding = 4, rgba16f) uniform image2D OUTPUT_TEX;  
+
+layout (set = 0, binding = 5) uniform Params {
+  mat4 normal_mat;
+  float random_offset;
+  float angle_offset;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+vec4 gtao_camera_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count);
+vec4 trace_tangent_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count);
+
+layout (local_size_x = TILE_SIZE, local_size_y = TILE_SIZE) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  //vec4 result = gtao_camera_space(pixel_pos, screen_uv, 4);
+  vec4 result = trace_tangent_space(pixel_pos, screen_uv, 1);
+  imageStore(OUTPUT_TEX, pixel_pos, result);
+}
+
+const float MAX_THIKNESS = 0.2;
+const int SAMPLES = 20;
+
+float rand(vec2 co){
+  return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+vec3 sample_normal(vec2 uv) {
+  return normalize((normal_mat * vec4(decode_normal(texture(NORMAL_TEX, uv).xy), 0)).xyz);
+}
+
+void integrate_direction(in vec2 start, in vec3 camera_start, in vec2 dir, int samples_count, in vec3 v, in vec3 normal, inout float h_cos, inout vec3 radiance) {
+  h_cos = -1.0;
+  radiance = vec3(0);
+  int radiance_samples = 0;
+
+  float previous_z = camera_start.z;
+
+  for (int i = 1; i <= samples_count; i++) {
+    vec2 tc = start + (float(i)/samples_count) * dir;
+    float sample_depth = textureLod(DEPTH_TEX, tc, 0).r;
+
+    vec3 sample_pos = reconstruct_view_vec(tc, sample_depth, fovy, aspect, znear, zfar);
+    
+    if (sample_pos.z > previous_z + MAX_THIKNESS) {
+      break;
+    }
+
+    previous_z = sample_pos.z;
+    vec3 sample_offset = normalize(sample_pos - camera_start);
+
+    float sample_cos = dot(v, sample_offset);
+    if (sample_cos >= h_cos) { //visible pixel
+      h_cos = sample_cos;
+      radiance_samples += 1;
+      vec3 h = normalize(v + sample_offset);
+      radiance += textureLod(COLOR_TEX, tc, 0).rgb * max(dot(normal, sample_offset), 0) * DistributionGGX(normal, h, 0.8);
+    }
+  }
+
+  radiance = (radiance_samples > 0)? (radiance/samples_count) : vec3(0);
+}
+
+bool combined_trace(vec3 start, vec3 end, float ao_radius, int ao_samples, int far_samples, in vec3 w0, inout float h_cos, inout vec2 hit_uv) {
+  h_cos = -1.0;
+  bool hit = false;
+
+  vec3 ao_delta = (ao_radius/ao_samples) * (end - start);
+
+  for (int i = 1; i < ao_samples; i++) {
+    vec3 p = start + i * ao_delta;
+    float sample_depth = textureLod(DEPTH_TEX, p.xy, 0).r;
+    vec3 sample_pos = reconstruct_view_vec(p.xy, sample_depth, fovy, aspect, znear, zfar);
+  
+  }
+  return hit;
+}
+
+bool trace_ray(vec3 start, vec3 end, in vec3 camera_start, int samples_count, in vec3 v, inout float h_cos, inout vec2 hit_uv) {
+  vec3 delta = end - start;
+  vec2 tex_size = textureSize(DEPTH_TEX, 0);
+  bool hit = false;
+  bool hor_stop = false;
+  h_cos = -1.0;
+
+  float previous_z = camera_start.z;
+
+  ivec2 pixel_dist = ivec2(tex_size * abs(delta.xy));
+  int steps = max(pixel_dist.x, pixel_dist.y);
+  vec3 vec_step = delta/steps;
+  
+  for (int i = 1; i < samples_count - 1; i++) {
+    vec3 p = start + vec_step * i;
+    
+    if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) {
+      break;
+    }
+    
+    float depth = texelFetch(DEPTH_TEX, ivec2(floor(p.xy * tex_size)), 0).x;
+
+    if (p.z - 0.00001 > depth) { //test reflection hit
+      if (p.z - depth <= 0.01 && !hit) {
+        hit_uv = p.xy;
+        hit = true;
+      }
+    }
+    vec2 pixel_dist = abs(p.xy - start.xy) * tex_size;
+
+    vec3 sample_pos = reconstruct_view_vec(p.xy, depth, fovy, aspect, znear, zfar);
+    
+    if (sample_pos.z > previous_z + MAX_THIKNESS) {
+      hor_stop = true;
+    }
+
+    previous_z = sample_pos.z;
+    vec3 sample_offset = normalize(sample_pos - camera_start);
+
+    float sample_cos = dot(v, sample_offset);
+    if (sample_cos >= h_cos && max(pixel_dist.x, pixel_dist.y) < 32 && !hor_stop) { //visible pixel
+      h_cos = sample_cos;
+    }
+  }
+  return hit;
+}
+
+float gtao_direction(in ivec2 pos) { // -> full rotation every 4 pixels
+  return (1.0 / 16.0) * ((((pos.x + pos.y) & 3) << 2) + (pos.x & 3));
+}
+
+vec3 get_intersection(vec3 v, vec3 r, vec3 d) { //v + a * r = b * d; returns b * d;
+  float DdotR = dot(d, r);
+  float VdotR = dot(v, r);
+  float VdotD = dot(v, d);
+
+  float betta = (VdotD - VdotR * DdotR)/(1 - DdotR * DdotR);
+
+  return d * betta;
+}
+
+vec4 gtao_camera_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count) {
+  float frag_depth = textureLod(DEPTH_TEX, screen_uv, 0).r;
+  if (frag_depth >= 1.f) {
+    return vec4(0, 0, 0, 1);
+  }
+
+  vec3 camera_pos = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
+  vec3 w0 = -normalize(camera_pos);
+  vec3 camera_normal = normalize((normal_mat * vec4(decode_normal(texture(NORMAL_TEX, screen_uv).xy), 0)).xyz);
+  camera_normal += 1e-6 * camera_normal;
+
+  //vec2 dir_radius = min(200.0/length(camera_pos), 512.0) / vec2(textureSize(DEPTH_TEX, 0));
+  vec2 dir_radius = 256 / vec2(textureSize(DEPTH_TEX, 0));
+  float base_angle = gtao_direction(pos) + angle_offset; 
+  float sum = 0.f;
+  vec3 radiance_sum = vec3(0);
+
+  float random_rotation = -PI * (rand(screen_uv + vec2(random_offset, 0)) - 0.5); //-PI/2 .. + PI/2
+  
+  for (int dir_index = 0; dir_index < dirs_count; dir_index++) {
+    float angle = 2 * PI * (base_angle + float(dir_index)/float(dirs_count));
+
+    vec2 sample_direction = dir_radius * vec2(cos(angle), sin(angle));
+    vec3 sample_end_pos = reconstruct_view_vec(screen_uv + sample_direction, frag_depth, fovy, aspect, znear, zfar);
+    vec3 camera_delta = normalize(sample_end_pos - camera_pos);
+    vec3 bitangent = normalize(cross(camera_delta, w0)); 
+    vec3 tangent = normalize(cross(w0, bitangent)); 
+
+    vec3 ray_direction = w0 * sin(random_rotation) + tangent * cos(random_rotation);
+    vec3 ray_end = get_intersection(camera_pos, ray_direction, normalize(sample_end_pos));
+
+    vec3 end_point = project_view_vec(ray_end, fovy, aspect, znear, zfar);
+
+    vec3 slice_normal = normalize(cross(w0, -sample_end_pos));
+    vec3 normal_projected = camera_normal - dot(camera_normal, slice_normal) * slice_normal;
+    float n = PI/2.0 - acos(dot(normalize(normal_projected), normalize(sample_end_pos - camera_pos)));
+
+    float h_cos;
+    vec3 dir_radiance = vec3(0);
+    vec2 hit_pos;
+    //integrate_direction(screen_uv, camera_pos, sample_direction, SAMPLES, w0, camera_normal, h_cos, dir_radiance);
+    if (trace_ray(vec3(screen_uv, frag_depth), end_point, camera_pos, SAMPLES, w0, h_cos, hit_pos)) {
+      vec3 hit_normal = normalize((normal_mat * vec4(decode_normal(texture(NORMAL_TEX, hit_pos).xy), 0)).xyz);
+      vec3 color = texture(COLOR_TEX, hit_pos).rgb;
+      dir_radiance = (dot(camera_normal, hit_normal) < 0)? color : vec3(0);
+    }
+    float h = acos(h_cos);
+    h = min(n + min(h - n, PI/2.0), h);
+    sum += length(normal_projected) * 0.25 * max(-cos(2 * h - n) + cos(n) + 2*h*sin(n), 0);
+    radiance_sum += dir_radiance * DistributionGGX(camera_normal, normalize(w0 + ray_direction), 0.9);
+  }
+  float norm_coef = 2.0/float(dirs_count);
+
+  return vec4(radiance_sum/float(dirs_count), norm_coef * sum);
+}
+
+void calc_tangent_space(vec3 normal, inout vec3 tangent, inout vec3 bitangent) {
+  if (abs(normal.z) > 0.0) {
+    float k = sqrt(normal.y * normal.y + normal.z * normal.z);
+    tangent = vec3(0.0, -normal.z/k, normal.y/k);
+  }
+  else
+  {
+    float k = sqrt(normal.x * normal.x + normal.y * normal.y);
+    tangent = vec3(normal.y/k, -normal.x/k, 0.0);
+  }
+
+  bitangent = cross(normal, tangent);
+}
+
+shared vec3 RAY_HIT_POS[TILE_SIZE * TILE_SIZE];
+shared vec3 RAY_HIT_COLOR[TILE_SIZE * TILE_SIZE];
+
+vec4 trace_tangent_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count) {
+  vec3 screen_pos = vec3(screen_uv, textureLod(DEPTH_TEX, screen_uv, 0).r);
+  if (screen_pos.z >= 1.f) {
+    return vec4(0.f, 0.f, 0.f, 1);
+  }
+
+  vec3 camera_pos = reconstruct_view_vec(screen_pos.xy, screen_pos.z, fovy, aspect, znear, zfar);
+  vec3 camera_normal = sample_normal(screen_pos.xy);
+  camera_pos += 1e-6 * camera_normal;
+
+  vec3 tangent, bitangent;
+  calc_tangent_space(camera_normal, tangent, bitangent);
+  
+  vec4 result = vec4(0);
+  float base_angle = gtao_direction(pos) + angle_offset;
+  float normal_angle = PI/2 * rand(screen_uv + vec2(random_offset, 0)); 
+  vec2 ao_dir_radius = min(200.0/length(camera_pos), 32.0) / vec2(textureSize(DEPTH_TEX, 0));
+  
+  for (int dir_index = 0; dir_index < dirs_count; dir_index++) {
+    float angle = 2 * PI * (base_angle + float(dir_index)/float(dirs_count));
+    vec3 camera_sample_dir = normalize(cos(angle) * tangent + sin(angle) * bitangent + camera_normal * sin(normal_angle));
+    vec3 screen_dir = project_view_vec(camera_pos + camera_sample_dir, fovy, aspect, znear, zfar);
+    
+    screen_dir -= screen_pos;
+    screen_dir = screen_dir/length(screen_dir.xy) * max(ao_dir_radius.x, ao_dir_radius.y);
+    //screen_dir = normalize(screen_dir - screen_pos.xy) ;
+    bool ray_hit = false;
+    vec3 hit_pos = vec3(0);
+
+    float h_cos = 0;
+    float previous_z = camera_pos.z;
+    for (int i = 0; i < SAMPLES; i++) {
+      vec3 tc = screen_pos + (float(i)/float(SAMPLES)) * screen_dir;
+      float tc_depth = textureLod(DEPTH_TEX, tc.xy, 0).r;
+      vec3 camera_sample = reconstruct_view_vec(tc.xy, tc_depth, fovy, aspect, znear, zfar);
+      //vec3 camera_tc = reconstruct_view_vec(tc.xy, tc.z, fovy, aspect, znear, zfar);
+
+      if (tc.x < 0 || tc.x > 1 || tc.y < 0 || tc.y > 1 || camera_sample.z > previous_z + MAX_THIKNESS) {
+        break;
+      }
+
+      if (!ray_hit && tc.z - 1e-6 > tc_depth) {
+        hit_pos = tc;
+        ray_hit = true;
+      }
+
+      h_cos = max(h_cos, dot(camera_normal, normalize(camera_sample - camera_pos)));
+      previous_z = camera_sample.z;
+    }
+
+    h_cos = min(h_cos, 1);
+    float h = acos(h_cos);
+    //result.a += 0.5 * sqrt(1 - h_cos * h_cos);
+    result.a += 0.25 * (1 - cos(2 * h));
+    //Additional trace
+    const int FAR_SAMPLES = 8;
+    vec3 start_ray = screen_pos + screen_dir;
+    screen_dir *= 2;
+
+    for (int i = 0; i < FAR_SAMPLES; i++) {
+      vec3 tc = start_ray + (float(i)/float(FAR_SAMPLES)) * screen_dir;
+      float tc_depth = textureLod(DEPTH_TEX, tc.xy, 0).r;
+      float camera_z = linearize_depth2(tc_depth, znear, zfar);
+
+      if (tc.x < 0 || tc.x > 1 || tc.y < 0 || tc.y > 1 || camera_z > previous_z + 0.1) {
+        break;
+      }
+
+      if (!ray_hit && tc.z - 1e-6 > tc_depth) {
+        hit_pos = tc;
+        ray_hit = true;
+      }
+      previous_z = camera_z;
+    }
+
+    int index = int(gl_LocalInvocationID.y * TILE_SIZE + gl_LocalInvocationID.x);
+    vec3 hit_normal = ray_hit? sample_normal(hit_pos.xy) : vec3(0);
+    ray_hit = ray_hit && (dot(camera_normal, hit_normal) < 0);
+    RAY_HIT_POS[index] = ray_hit? hit_pos : vec3(-1, -1, -1);
+    RAY_HIT_COLOR[index] = ray_hit? texture(COLOR_TEX, hit_pos.xy).rgb : vec3(0);
+    memoryBarrierShared();
+    //barrier();
+
+    int samples_count = 0;
+    vec3 W0 = -normalize(camera_pos);
+    float weight = 0.f;
+    float roughness = texture(MATERIAL_TEX, screen_pos.xy).g;
+    vec3 accum = vec3(0);
+
+    for (int x = int(gl_LocalInvocationID.x) - 1; x <= int(gl_LocalInvocationID.x) + 1; x++) {
+      for (int y = int(gl_LocalInvocationID.y) - 1; y <= int(gl_LocalInvocationID.y) + 1; y++) {
+        if (x >= 0 && x < TILE_SIZE && y >= 0 && y < TILE_SIZE) {
+          int index = y * TILE_SIZE + x;
+          vec3 ray_hit = RAY_HIT_POS[index];
+          if (ray_hit.z >= 0) {
+            vec3 camera_hit_pos = reconstruct_view_vec(ray_hit.xy, ray_hit.z, fovy, aspect, znear, zfar);
+            vec3 L = normalize(camera_hit_pos - camera_pos);
+            vec3 H = normalize(W0 + L);
+
+            float w = DistributionGGX(camera_normal, H, roughness) * max(dot(camera_normal, L), 0); 
+            weight += w;
+            accum += RAY_HIT_COLOR[index] * w;
+            samples_count++;
+          }
+        }
+      }
+    }
+
+    result.xyz += (weight > 0)? (accum/weight) : vec3(0);
+  }
+
+  result.a *= 2/float(dirs_count); 
+  result.rgb /= float(dirs_count);
+  return result;
+}

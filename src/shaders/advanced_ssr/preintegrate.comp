@@ -1,0 +1,94 @@
+#version 460
+
+layout (set = 0, binding = 0, r32f) uniform writeonly image2D OUT_PDF;
+
+const int STEP_COUNT = 2000;
+
+layout (constant_id = 0) const int MY_CONST = 100;
+
+float G(in float t, in float a, in float b);
+float G2(in float t, in float a, in float b);
+vec2 calc_bounds(in float a, in float b);
+
+layout (local_size_x = 8, local_size_y = 4) in;
+#if 0
+void main() {
+  ivec2 resolution = imageSize(OUT_PDF);
+  ivec2 pixel_pos = ivec2(gl_GlobalInvocationID.xy);
+  
+  if (any(greaterThanEqual(pixel_pos, resolution))) {
+    return;
+  }
+
+  const float coef = 1.0/sqrt(2.0);
+  const float p = float(pixel_pos.x + 0.5)/resolution.x;
+  const float q = 2.0 * float(pixel_pos.y + 0.5)/resolution.y - 1.0;
+  
+  const float a = coef * (p - q);
+  const float b = coef * (p + q);
+  /*
+    Integrate (1 - t^2)/(1 + t^2 - (at + b)^2)^2 
+    by t from -1 to 1
+  */
+
+  float sum = 0.0;
+  float dt = 2.0/STEP_COUNT;
+  for (int i = 0; i < STEP_COUNT; i++) {
+    float t = -1 + dt * (i + 0.5);
+    sum += G(t, a, b);
+  }
+
+  float g = 2.0/STEP_COUNT * sum;
+  imageStore(OUT_PDF, pixel_pos, vec4(g, 0, 0, 0)); 
+}
+#else 
+void main() {
+  ivec2 resolution = imageSize(OUT_PDF);
+  ivec2 pixel_pos = ivec2(gl_GlobalInvocationID.xy);
+  
+  if (any(greaterThanEqual(pixel_pos, resolution))) {
+    return;
+  }
+
+  const float a = 2 * float(pixel_pos.x + 0.5)/resolution.x - 1;
+  const float b = float(pixel_pos.y + 0.5)/resolution.y;
+
+  float sum = 0.0;
+  float dt = 2.0/STEP_COUNT;
+  for (int i = 0; i < STEP_COUNT; i++) {
+    float t = -1 + dt * (i + 0.5);
+    sum += G2(t, a, b);
+  }
+
+  float g = 2.0/STEP_COUNT * sum;
+  imageStore(OUT_PDF, pixel_pos, vec4(g, 0, 0, 0)); 
+}
+#endif
+
+
+float G(in float t, in float a, in float b) {
+  float t2 = t * t;
+  float L = a*t + b;
+  float L2 = L * L;
+  float denom = (1 + t2 - L2);
+  return (L > 0)? (1 - t2)/(denom * denom) : 0.0;  
+}
+
+float G2(in float t, in float a, in float b) {
+  const float p = b - a;
+  const float q = b + a;
+  const float L = p * t + q;
+  const float nom = (1 - t) * L;
+  const float denom = (1 + t * t - 0.5 * L * L);
+  return (L > 0)? nom/(denom * denom) : 0.0;
+}
+
+vec2 calc_bounds(in float a, in float b) {
+  const float p = b - a;
+  const float q = b + a;
+  const float mid = clamp(-p/q, -1, 1);
+  if (p > 0) {
+    return vec2(mid, 1);
+  }
+  return vec2(-1, mid);
+}

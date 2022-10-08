@@ -1,0 +1,40 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D RAW_TEX;
+layout (set = 0, binding = 1) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 2, rgba16f) uniform image2D OUTPUT_TEX; 
+
+layout (push_constant) uniform PushConstants {
+  float znear;
+  float zfar;
+};
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  float pixel_depth = texelFetch(DEPTH_TEX, ivec2(pixel_pos), 0).r;
+  if (pixel_depth >= 1.f) {
+    imageStore(OUTPUT_TEX, pixel_pos, vec4(0, 0, 0, 1));
+  }
+
+  float linear_depth = linearize_depth2(pixel_depth, znear, zfar);
+  float weight_sum = 0;
+  vec4 sum = vec4(0);
+  
+  for (int x = 0; x < 4; x++) {
+    for (int y = 0; y < 4; y++) {
+      ivec2 sample_pos = pixel_pos + ivec2(x - 2, y - 2);
+      float sampled_depth = linearize_depth2(texelFetch(DEPTH_TEX, ivec2(sample_pos), 0).r, znear, zfar);
+      float weight = max(0.0, 1.0 - abs(sampled_depth - linear_depth) / (linear_depth * 0.1));
+      weight_sum += weight;
+      sum += weight * texelFetch(RAW_TEX, ivec2(sample_pos), 0);
+    }
+  }
+
+  sum /= weight_sum;
+  imageStore(OUTPUT_TEX, pixel_pos, sum);
+}

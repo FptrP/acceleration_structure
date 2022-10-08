@@ -1,0 +1,52 @@
+#version 460
+
+#include <gbuffer_encode.glsl>
+#include <brdf.glsl>
+
+layout(set = 0, binding = 0) uniform sampler2D depth_tex;
+layout(set = 0, binding = 1) uniform sampler2D raw_gtao;
+layout(set = 0, binding = 2, r8) uniform writeonly image2D filtered_gtao;
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+layout (push_constant) uniform FilterParams {
+  float znear;
+  float zfar;
+}; 
+
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + 0.5)/vec2(tex_size);
+
+  float pixel_depth = texelFetch(depth_tex, ivec2(pixel_pos), 0).r;
+  if (pixel_depth >= 1.f) {
+    imageStore(filtered_gtao, pixel_pos, vec4(1, 0, 0, 0));
+  }
+
+  float linear_depth = linearize_depth2(pixel_depth, znear, zfar);
+  float weight_sum = 0;
+  float norm_weigth = 0;
+  float ao = 0;
+#if 1
+  for (int x = 0; x < 4; x++) {
+    for (int y = 0; y < 4; y++) {
+      ivec2 sample_pos = pixel_pos + ivec2(x - 2, y - 2);
+      float sampled_depth = linearize_depth2(texelFetch(depth_tex, ivec2(sample_pos), 0).r, znear, zfar);
+      float weight = max(0.0, 1.0 - 5 * abs(sampled_depth - linear_depth) / abs(linear_depth));
+      weight_sum += weight;
+      ao += weight * texelFetch(raw_gtao, ivec2(sample_pos), 0).r;
+      norm_weigth += weight * texelFetch(raw_gtao, ivec2(sample_pos), 0).g;
+    }
+  }
+#else
+  ao = texelFetch(raw_gtao, ivec2(pixel_pos), 0).r;
+  weight_sum = 1.0;
+  norm_weigth = 1.0;
+#endif
+  //norm_weigth /= weight_sum;
+  //ao = 2 * PI * ao/norm_weigth;
+  //ao *= (2 * PI)/norm_weigth;
+  ao /= weight_sum;
+  imageStore(filtered_gtao, pixel_pos, vec4(ao, 0, 0, 0));
+}

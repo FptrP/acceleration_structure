@@ -1,0 +1,102 @@
+#version 460 core
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1, rgba32f) uniform image2D OUT_PLANES;
+
+layout (push_constant) uniform PushConstants {
+  mat4 camera_to_world;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+#define TILE_SIZE 8
+
+shared vec3 g_vec0[TILE_SIZE * TILE_SIZE];
+shared vec3 g_vec1[TILE_SIZE * TILE_SIZE];
+shared vec3 g_vec2[TILE_SIZE * TILE_SIZE];
+
+layout (local_size_x = TILE_SIZE, local_size_y = TILE_SIZE) in;
+void main() {
+  const ivec2 pixel_pos = ivec2(gl_GlobalInvocationID.xy);
+  const ivec2 input_size = textureSize(DEPTH_TEX, 0);
+  const vec2 screen_uv = vec2(pixel_pos)/vec2(input_size);
+  const uint thread_id = gl_LocalInvocationIndex;
+
+  vec3 view_vec = vec3(0, 0, 0);
+  
+  if (all(lessThan(pixel_pos, input_size))) {
+    float pixel_depth = texelFetch(DEPTH_TEX, pixel_pos, 0).x;
+    view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+    
+    vec4 world_vec = camera_to_world * vec4(view_vec, 1);
+    vec4 world_origin = camera_to_world * vec4(0, 0, 0, 1);
+    view_vec = world_vec.xyz - world_origin.xyz;
+  }
+
+  //init params, g_vec0 -average, g_vec1 - variance, g_vec2 - cov
+  g_vec0[thread_id] = view_vec;
+  g_vec1[thread_id] = view_vec * view_vec;
+  //g_vec2[thread_id] = vec3(view_vec.x * view_vec.y, view_vec.x * view_vec.z, view_vec.y * view_vec.z);
+  g_vec2[thread_id] = view_vec.xxy * view_vec.yzz;
+
+  barrier();
+
+  const uint num_elems = TILE_SIZE * TILE_SIZE;  
+  uint offset = num_elems/2;
+
+  while (offset != 0) {
+    const uint index = thread_id + offset;
+    if (index < 2 * offset) {
+      g_vec0[thread_id] += g_vec0[index];
+      g_vec1[thread_id] += g_vec1[index];
+      g_vec2[thread_id] += g_vec2[index];
+    }
+    offset /= 2;
+    barrier();
+  }
+
+  if (thread_id == 0) {
+    
+    mat3 equ = mat3(
+      g_vec1[0].x, g_vec2[0].x, g_vec2[0].y,
+      g_vec2[0].x, g_vec1[0].y, g_vec2[0].z,
+      g_vec2[0].y, g_vec2[0].z, g_vec1[0].z
+    );
+
+    vec3 plane = inverse(equ) * g_vec0[0];
+    g_vec0[0] = plane;  
+  }
+
+  barrier();
+
+  float sse = dot(g_vec0[0], view_vec) - 1;
+  sse *= sse;
+
+  if (isnan(sse)) {
+    sse = 1e10;
+  }
+
+  //g_vec2 - sse sum
+  g_vec2[thread_id] = vec3(sse, 0, 0);
+
+  barrier();
+
+  offset = num_elems/2;
+  while (offset != 0) {
+    const uint index = thread_id + offset;
+    if (index < 2 * offset) {
+      g_vec2[thread_id].x += g_vec2[index].x;
+    }
+
+    offset /= 2;
+    barrier();
+  }
+
+  if (thread_id == 0) {
+    vec4 result = vec4(g_vec0[0], g_vec2[0].x/num_elems);
+    imageStore(OUT_PLANES, ivec2(gl_WorkGroupID.xy), result);
+  }
+}

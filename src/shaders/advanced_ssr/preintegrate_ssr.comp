@@ -1,0 +1,45 @@
+#version 460
+#include <brdf.glsl>
+
+#define NUM_SAMPLES 128
+
+layout (set = 0, binding = 0, std140) uniform Constants {
+  vec4 samples[NUM_SAMPLES];
+};
+layout (set = 0, binding = 1, rg16f) uniform image2D OUT_BRDF; 
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_BRDF);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (all(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+
+  const float roughness = (pixel_pos.x + 0.5)/float(tex_size.x);
+  const float NdotV = (pixel_pos.y + 0.5)/float(tex_size.y);
+
+  const float roughness2 = roughness * roughness; 
+  const vec3 V = vec3(sqrt(1 - NdotV * NdotV), 0, NdotV);
+
+  float A = 0.0;
+  float B = 0.0;
+  
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    vec3 H = sampleGGXVNDF(V, roughness2, roughness2, samples[i].x, samples[i].y);
+    vec3 L = normalize(reflect(-V, H));
+    float NdotL = L.z;
+    float alpha = pow(1 - dot(V, H), 5.0);
+    float G1 = brdfG1(roughness2, NdotV);
+    float G2 = brdfG2(NdotV, NdotL, roughness2);
+
+    A += G2/G1 * (1 - alpha);
+    B += G2/G1 * alpha;
+  }
+
+  A *= 1.0/NUM_SAMPLES;
+  B *= 1.0/NUM_SAMPLES;
+  imageStore(OUT_BRDF, pixel_pos, vec4(A, B, 0, 0));
+}

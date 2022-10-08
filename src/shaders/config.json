@@ -1,0 +1,125 @@
+{
+  "texdraw" : {
+    "vertex" : "texdraw/shader_vert",
+    "fragment" : "texdraw/shader_frag"
+  },
+  "perlin" : {
+    "vertex" : "perlin/shader_vert",
+    "fragment" : "perlin/shader_frag"
+  },
+  "gbuf_opaque" : {
+    "vertex" : "gbuf/opaque_vert",
+    "fragment" : "gbuf/opaque_frag"
+  },
+  "gbuf_opaque_taa" : {
+    "vertex" : "gbuf/opaque_taa_vert",
+    "fragment" : "gbuf/opaque_taa_frag"
+  },
+  "defered_shading" : {
+    "vertex" : "defered_shading/shader_vert",
+    "fragment" : "defered_shading/shader_frag"
+  },
+  "default_shadow" : {
+    "vertex" : "shadows/default_vert",
+    "fragment" : "shadows/default_frag"
+  },
+  "ssao" : {
+    "vertex" : "ssao/shader_vert",
+    "fragment" : "ssao/shader_frag"
+  },
+  "gtao_main" : {
+    "vertex" : "gtao/main_vert",
+    "fragment" : "gtao/main_frag"
+  },
+  "gtao_compute_main" : {
+    "compute" : "gtao/main_comp"
+  },
+  "gtao_rt_main" : {
+    "vertex" : "gtao/main_vert",
+    "fragment" : "gtao/rt_main_frag"
+  },
+  "gtao_filter" : {
+    "compute" : "gtao/filter_comp"
+  },
+  "gtao_reproject" : {
+    "compute" : "gtao/reproject_comp"
+  },
+  "gtao_accumulate" : {
+    "compute" : "gtao/accum_comp"
+  },
+  "downsample_depth" : {
+    "vertex" : "depth_downsample/shader_vert",
+    "fragment" : "depth_downsample/shader_frag"
+  },
+  "ssr" : {
+    "vertex" : "ssr/shader_vert",
+    "fragment" : "ssr/shader_frag"
+  },
+  "rotations" : {
+    "compute" : "rotations/rot_comp"
+  },
+  "deinterleave_depth" : {
+    "compute" : "gtao_opt/deinterleave_comp"
+  },
+  "screen_trace_main" : {
+    "compute" : "screen_trace/trace_comp"
+  },
+  "screen_trace_filter" : {
+    "compute" : "screen_trace/filter_comp"
+  },
+  "screen_trace_accumulate" : {
+    "compute" : "screen_trace/accumulate_comp"
+  },
+  "main_deinterleaved" : {
+    "compute" : "gtao_opt/main_deinterleaved_comp"
+  },
+  "cubemap_probe" : {
+    "vertex" : "cubemap_probe/shader_vert",
+    "fragment" : "cubemap_probe/shader_frag"
+  },
+  "cube2oct" : {
+    "compute" : "cube2oct/shader_comp"
+  },
+  "probe_downsample" : {
+    "vertex" : "probe_downsample/shader_vert",
+    "fragment" : "probe_downsample/shader_frag"
+  },
+  "trace_probe" : {
+    "compute" : "trace_probe/shader_comp"
+  },
+  "downsample_gbuffer" : {
+    "vertex" : "advanced_ssr/fullscreen_vert",
+    "fragment" : "advanced_ssr/downsample_gbuffer_frag"
+  },
+  "depth_mips" : {
+    "vertex" : "advanced_ssr/fullscreen_vert",
+    "fragment" : "advanced_ssr/depth_mips_frag"
+  },
+  "sssr_trace" : {
+    "compute" : "advanced_ssr/trace_comp"
+  },
+  "sssr_trace_indirect" : {
+    "compute" : "advanced_ssr/trace_indirect_comp"
+  },
+  "sssr_filter" : {
+    "compute" : "advanced_ssr/filter_comp"
+  },
+  "sssr_blur" : {
+    "compute" : "advanced_ssr/blur_comp"
+  },
+  "sssr_classification" : {
+    "compute" : "advanced_ssr/classification_comp"
+  },
+  "tile_regression" : {
+    "compute" : "advanced_ssr/regression_comp"
+  },
+  "pdf_preintegrate" : {
+    "compute" : "advanced_ssr/preintegrate_comp"
+  },
+  "brdf_preintegrate" : {
+    "compute" : "advanced_ssr/preintegrate_ssr_comp"
+  },
+  "taa_resolve" : {
+    "compute" : "taa/resolve_comp"
+  }
+}

@@ -1,0 +1,68 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+#define STATIC_REPROJECT 0
+#define MATRIX_REPROJECT 1
+#define REPROJECT_MODE STATIC_REPROJECT 
+
+const float REPROJECT_BIAS = 1e-6;
+const float REPROJECT_COEF = 0.05;
+
+layout(set = 0, binding = 0) uniform ReprojectParams {
+  mat4 camera_to_prev_frame;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout(set = 0, binding = 1) uniform sampler2D current_depth;
+layout(set = 0, binding = 2) uniform sampler2D prev_depth;
+layout(set = 0, binding = 3) uniform sampler2D current_ao;
+layout(set = 0, binding = 4) uniform sampler2D prev_ao;
+layout(set = 0, binding = 5, r8) uniform writeonly image2D reprojected_ao;
+
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 1) in;
+
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  float new_ao = texelFetch(current_ao, pixel_pos, 0).r;
+  float current_depth = texelFetch(current_depth, pixel_pos, 0).x;
+  vec3 cur_view = reconstruct_view_vec(screen_uv, current_depth, fovy, aspect, znear, zfar);
+  float ao = new_ao;
+
+#if REPROJECT_MODE == MATRIX_REPROJECT
+  vec4 reprojected = camera_to_prev_frame * vec4(cur_view, 1);
+  vec3 prev_view = reprojected.xyz / reprojected.w;
+  prev_view.xy = 0.5 * prev_view.xy + vec2(0.5);
+
+  if (prev_view.x > 0 && prev_view.x < 1 && prev_view.y > 0 && prev_view.y < 1) {
+    float sampled_depth = texture(prev_depth, prev_view.xy).x;
+    float sampled_ao = texture(prev_ao, prev_view.xy).x;
+
+    float reprojected_z = linearize_depth2(prev_view.z, znear, zfar);
+    float sampled_z = linearize_depth2(sampled_depth, znear, zfar);
+
+    float delta = abs(reprojected_z - sampled_z);
+
+    if (delta < REPROJECT_BIAS && sampled_depth < 1.0) {
+      ao = mix(sampled_ao, new_ao, REPROJECT_COEF);
+    }
+
+  }
+#elif REPROJECT_MODE == STATIC_REPROJECT
+  float sampled_depth = texelFetch(prev_depth, pixel_pos, 0).x;
+  float sampled_ao = texelFetch(prev_ao, pixel_pos, 0).x;
+
+  float sampled_z = linearize_depth2(sampled_depth, znear, zfar);
+  float delta = abs(sampled_z - cur_view.z);
+  if (delta < REPROJECT_BIAS && sampled_depth < 1.0) {
+    ao = mix(sampled_ao, new_ao, REPROJECT_COEF);
+  }
+#endif
+  
+  imageStore(reprojected_ao, ivec2(pixel_pos), vec4(ao, 0, 0, 0));
+}

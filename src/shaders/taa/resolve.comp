@@ -1,0 +1,77 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D HISTORY_COLOR_TEX;
+layout (set = 0, binding = 1) uniform sampler2D HISTORY_DEPTH_TEX;
+layout (set = 0, binding = 2) uniform sampler2D CURRENT_DEPTH_TEX;
+layout (set = 0, binding = 3) uniform sampler2D VELOCITY_TEX;
+layout (set = 0, binding = 4) uniform sampler2D COLOR_TEX;
+layout (set = 0, binding = 5, rgba8) uniform image2D OUTPUT_COLOR_TEX; 
+
+layout (set = 0, binding = 6) uniform TAAUniforms {
+  mat4 inverse_camera;
+  mat4 prev_inverse_camera;
+  vec4 fovy_aspect_znear_zfar;
+};
+
+vec3 reconstruct_world_pos(in sampler2D depth_tex, in mat4 inverse_camera, in vec2 screen_uv);
+
+layout (local_size_x = 8, local_size_y = 8) in;
+void main() {
+  ivec2 tex_size = ivec2(imageSize(OUTPUT_COLOR_TEX).xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (all(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+
+  vec3 out_color = vec3(0, 0, 0);
+  vec3 current_color = texture(COLOR_TEX, screen_uv).rgb;
+  vec2 velocity = texture(VELOCITY_TEX, screen_uv).xy;
+  float delta_len = length(velocity);
+  bool reprojected = false;
+
+  vec2 prev_uv = screen_uv + velocity;
+  
+  if (   all(greaterThanEqual(prev_uv, vec2(0, 0)))
+      && all(lessThanEqual(prev_uv, vec2(1, 1)))
+  )
+  {
+    vec3 history = texture(HISTORY_COLOR_TEX, prev_uv).rgb;
+    vec3 color0 = textureOffset(HISTORY_COLOR_TEX, prev_uv, ivec2(1, 0)).xyz;
+    vec3 color1 = textureOffset(HISTORY_COLOR_TEX, prev_uv, ivec2(0, 1)).xyz;
+    vec3 color2 = textureOffset(HISTORY_COLOR_TEX, prev_uv, ivec2(-1, 0)).xyz;
+    vec3 color3 = textureOffset(HISTORY_COLOR_TEX, prev_uv, ivec2(0, -1)).xyz;
+
+    vec3 color_min = min(color0, min(color1, min(color2, color3)));
+    vec3 color_max = max(color0, max(color1, max(color2, color3)));
+    history = clamp(history, color_min, color_max);
+
+    out_color = mix(history, current_color, 0.1);
+    
+    vec3 v_world_cur = reconstruct_world_pos(CURRENT_DEPTH_TEX, inverse_camera, screen_uv);
+    vec3 v_world_prev = reconstruct_world_pos(HISTORY_DEPTH_TEX, prev_inverse_camera, prev_uv);
+    vec3 v_camera = vec3(inverse_camera * vec4(0, 0, 0, 1));
+    
+    const float MAX_REPROJECTION_EPS = 0.2;
+    const float MIN_REPROJECTION_EPS = 0.01;
+    float error = length(v_world_cur - v_world_prev);
+    float pixel_dist = length(v_world_cur - v_camera);
+    reprojected = (delta_len < 0.005) || (error < clamp(0.1 * pixel_dist * delta_len, MIN_REPROJECTION_EPS, MAX_REPROJECTION_EPS)); 
+  }
+
+
+  if (!reprojected) {
+    out_color = current_color;
+  }
+
+  imageStore(OUTPUT_COLOR_TEX, pixel_pos, vec4(out_color, 0.f));
+}
+
+vec3 reconstruct_world_pos(in sampler2D depth_tex, in mat4 inverse_camera, in vec2 screen_uv) {
+  float d = texture(depth_tex, screen_uv).x;
+  vec3 v_camera = reconstruct_view_vec(screen_uv, d, fovy_aspect_znear_zfar.x, fovy_aspect_znear_zfar.y, fovy_aspect_znear_zfar.z, fovy_aspect_znear_zfar.w);
+  vec4 v_world = inverse_camera * vec4(v_camera, 1.0);
+  return v_world.xyz;
+}

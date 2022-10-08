@@ -1,0 +1,24 @@
+#version 460 core
+
+layout (set = 0, binding = 0, rgba8) uniform image2D out_image; 
+
+layout (push_constant) uniform PushConstants {
+  float angle;
+};
+
+float rand2D(vec2 co){ //->[0; 1] 
+    return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+layout (local_size_x=8, local_size_y=4) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos)/vec2(tex_size);
+
+  float cos_a = cos(angle);
+  float sin_a = sin(angle);
+  float c = -(pixel_pos.x * cos_a + pixel_pos.y * sin_a);
+  float rand = rand2D(vec2(c, c));
+  imageStore(out_image, pixel_pos, vec4(rand, rand, rand, rand));
+}

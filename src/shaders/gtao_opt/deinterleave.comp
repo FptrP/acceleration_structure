@@ -1,0 +1,22 @@
+#version 460
+
+layout (set = 0, binding = 0) uniform sampler2D input_depth;
+layout (set = 0, binding = 1, r32f) uniform writeonly image2DArray interleaved_depth;
+
+layout (push_constant) uniform PushConstants {
+  int pattern_step;
+};
+
+layout (local_size_x=8, local_size_y=4) in;
+void main() {
+  ivec2 tex_size = ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+
+  float sampled_depth = texelFetch(input_depth, pixel_pos, 0).x;
+
+  ivec2 out_pos = pixel_pos >> pattern_step;
+  int pattern_mod = (1 << pattern_step) - 1;
+  int layer = ((pixel_pos.y & pattern_mod) << pattern_step) + (pixel_pos.x & pattern_mod);
+
+  imageStore(interleaved_depth, ivec3(out_pos, layer), vec4(sampled_depth, 0, 0, 0));
+}
