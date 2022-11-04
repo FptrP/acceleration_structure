@@ -34,6 +34,8 @@ add_executable(main
   ssr.cpp
   advanced_ssr.cpp
   taa.cpp
+  depth_as.cpp
+  rtfx.cpp
   
   scene/scene.cpp
   scene/scene_as.cpp

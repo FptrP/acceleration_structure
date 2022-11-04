@@ -1,0 +1,51 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+struct VkAABB {
+  float min_x;
+  float min_y;
+  float min_z;
+  float max_x;
+  float max_y;
+  float max_z;
+};
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1, std430) buffer OUT_BUFFER {
+  VkAABB aabbs[];
+};
+
+layout (push_constant) uniform PushConstants {
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = ivec2(textureSize(DEPTH_TEX, 0));
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  if (any(greaterThanEqual(pixel_pos, tex_size)))
+    return;
+
+  vec2 uv = (vec2(pixel_pos) + vec2(0.5, 0.5))/tex_size;
+  int offset = pixel_pos.y * tex_size.x + pixel_pos.x;
+  float depth = texture(DEPTH_TEX, uv).x;
+
+  vec2 uv_top = (vec2(pixel_pos))/tex_size;
+  vec2 uv_bot = (vec2(pixel_pos) + vec2(1.0, 1.0))/tex_size;
+
+  vec3 top = reconstruct_view_vec(uv_top, depth, fovy, aspect, znear, zfar);
+  vec3 bot = reconstruct_view_vec(uv_bot, depth, fovy, aspect, znear, zfar);
+  const float THIKNESS = 0.1;
+  bot.z -= THIKNESS;
+  top.z -= 0.005;
+
+  vec3 vmin = min(top, bot);
+  vec3 vmax = max(top, bot); 
+
+  VkAABB aabb = VkAABB(vmin.x, vmin.y, vmin.z, vmax.x, vmax.y, vmax.z);
+  aabbs[offset] = aabb;
+}

@@ -1,0 +1,84 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL;
+layout (set = 0, binding = 2) uniform sampler2D ALBEDO;
+
+layout (set = 0, binding = 3) uniform TraceParams {
+  mat4 normal_mat;
+  uint frame_random;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout (set = 0, binding = 4) uniform accelerationStructureEXT DEPTH_AS;
+layout (set = 0, binding = 5, rgba16) uniform image2D OUT_REFLECTION;
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_REFLECTION);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (any(greaterThanEqual(pixel_pos, tex_size)))
+    return;
+
+  float pixel_depth = texture(DEPTH, screen_uv).x;
+
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+  vec3 pixel_normal_world = sample_gbuffer_normal(NORMAL, screen_uv);
+  vec3 pixel_normal = normalize(vec3(normal_mat * vec4(pixel_normal_world, 0)));
+  
+  vec3 R = normalize(reflect(view_vec, pixel_normal));
+  vec3 pad = 0.05 * normalize(view_vec);
+
+  vec3 screen_space_start = project_view_vec(view_vec - pad, fovy, aspect, znear, zfar);
+  vec3 screen_space_dir = project_view_vec(view_vec - pad + R, fovy, aspect, znear, zfar);
+  screen_space_dir -= screen_space_start;
+  screen_space_dir *= (1-screen_space_start.z)/abs(screen_space_dir.z);
+  
+  rayQueryEXT ray_query;
+	rayQueryInitializeEXT(ray_query, DEPTH_AS, 0, 0xFF, view_vec - pad, 0.005, R, 20.0);
+
+  vec2 hit_uv;
+  bool valid_hit = false;
+
+  while (rayQueryProceedEXT(ray_query)) {
+
+    if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
+      int primitive_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false); 
+      ivec2 hit_pixel = ivec2(primitive_id % tex_size.x, primitive_id/tex_size.x);
+      hit_uv = (hit_pixel + vec2(0.5, 0.5))/tex_size;
+      float hit_depth = texture(DEPTH, hit_uv).x;
+
+      vec3 hit = vec3(hit_uv, hit_depth);
+      float t = dot(hit.xy - screen_space_start.xy, screen_space_dir.xy)/dot(screen_space_dir.xy, screen_space_dir.xy);
+      vec3 t_hit = screen_space_start + screen_space_dir * t;
+
+      vec2 pixel_dist = vec2(tex_size) * abs(t_hit.xy - hit.xy);
+      vec2 offset = vec2(tex_size) * abs(hit_uv - screen_space_start.xy);
+
+      if (max(offset.x, offset.y) > 3 &&  max(pixel_dist.x, pixel_dist.y) < 1 && t_hit.z + 1e-12 > hit.z) {
+        valid_hit = true;
+        break;
+      }
+    }
+  }
+
+  rayQueryTerminateEXT(ray_query);
+  
+  vec3 color = vec3(0, 0, 0);
+  if (valid_hit)
+  {
+    color = texture(ALBEDO, hit_uv).xyz;  
+  }
+
+  vec4 hit_color = vec4(color, 1.0);
+  
+  imageStore(OUT_REFLECTION, pixel_pos, hit_color);
+}

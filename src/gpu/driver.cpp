@@ -236,6 +236,8 @@ namespace gpu {
     vkGetDeviceQueue(logical_device, queue_family_index, 0, &queue);
   
     VmaVulkanFunctions vk_func {
+      vkGetInstanceProcAddr,
+      vkGetDeviceProcAddr,
       vkGetPhysicalDeviceProperties,
       vkGetPhysicalDeviceMemoryProperties,
       vkAllocateMemory,

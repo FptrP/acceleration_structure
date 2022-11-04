@@ -274,10 +274,10 @@ namespace rendergraph {
 #if RENDERGRAPH_DEBUG
     tracking_state.dump_barriers();
 #endif
-    if (once) {
+    /*if (once) {
       tracking_state.dump_barriers();
       once--;
-    }
+    }*/
 
     auto barriers = tracking_state.take_barriers();
     tracking_state.clear();

@@ -156,6 +156,24 @@ namespace scene {
     }
   }
 
+  static void copy_buf(gpu::TransferCmdPool &transfer_pool, gpu::BufferPtr &src, gpu::BufferPtr &dst) {
+    VkCommandBufferBeginInfo begin_info {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    
+    VkBufferCopy region {
+      .srcOffset = 0,
+      .dstOffset = 0,
+      .size = src->get_size()
+    };
+
+    auto cmd = transfer_pool.get_cmd_buffer();
+    vkBeginCommandBuffer(cmd, &begin_info);
+    
+    vkCmdCopyBuffer(cmd, src->api_buffer(), dst->api_buffer(), 1, &region);
+    vkEndCommandBuffer(cmd);
+    transfer_pool.submit_and_wait();
+  }
+
   void SceneAccelerationStructure::build_tlas(gpu::TransferCmdPool &transfer_pool, const CompiledScene &source) {
     //todo : normal alghorithm
     VkTransformMatrixKHR transform {
@@ -180,10 +198,10 @@ namespace scene {
     
 
   
-    auto instance_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_CPU_TO_GPU, sizeof(instance) * nodes.size(),
-      VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+    auto instance_buffer_cpu = gpu::create_buffer(VMA_MEMORY_USAGE_CPU_TO_GPU, sizeof(instance) * nodes.size(),
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
-    auto instance_data = (VkAccelerationStructureInstanceKHR*)instance_buffer->get_mapped_ptr();
+    auto instance_data = (VkAccelerationStructureInstanceKHR*)instance_buffer_cpu->get_mapped_ptr();
 
     auto vk_device = gpu::app_device().api_device();
 
@@ -206,13 +224,19 @@ namespace scene {
       instance_data[i] = instance;
     }
 
+    auto instance_buffer_gpu = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(instance) * nodes.size(),
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
+
+    copy_buf(transfer_pool, instance_buffer_cpu, instance_buffer_gpu);
+    instance_buffer_cpu.release();
+    
     VkAccelerationStructureGeometryKHR geometry {};
     geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
 		geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
 		geometry.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
 		geometry.geometry.instances.arrayOfPointers = VK_FALSE;
-		geometry.geometry.instances.data = VkDeviceOrHostAddressConstKHR {.deviceAddress = instance_buffer->device_address()};
+		geometry.geometry.instances.data = VkDeviceOrHostAddressConstKHR {.deviceAddress = instance_buffer_gpu->device_address()};
 
     VkAccelerationStructureBuildGeometryInfoKHR build_geometry {};
 		build_geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;

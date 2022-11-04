@@ -121,5 +121,11 @@
   },
   "taa_resolve" : {
     "compute" : "taa/resolve_comp"
+  },
+  "build_depth_as" : {
+    "compute" : "depth_as/depth_as_comp"
+  },
+  "trace_depth_as" : {
+    "compute" : "depth_as/trace_rays_comp"
   }
 }

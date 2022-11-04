@@ -1,0 +1,75 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL;
+layout (set = 0, binding = 2) uniform sampler2D ALBEDO;
+
+layout (set = 0, binding = 3) uniform TraceParams {
+  mat4 normal_mat;
+  uint frame_random;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout (set = 0, binding = 4) uniform accelerationStructureEXT DEPTH_AS;
+layout (set = 0, binding = 5, rgba16) uniform image2D OUT_REFLECTION;
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_REFLECTION);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (any(greaterThanEqual(pixel_pos, tex_size)))
+    return;
+
+  
+#if 0
+  float pixel_depth = texture(DEPTH, screen_uv).x;
+  vec3 pixel_normal_world = sample_gbuffer_normal(NORMAL, screen_uv);
+  vec3 pixel_normal = normalize((normal_mat * vec4(pixel_normal_world, 0)).xyz);
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+
+  //view_vec += 0.001 * pixel_normal;
+  vec3 R = normalize(reflect(view_vec, pixel_normal));
+
+  rayQueryEXT ray_query;
+	rayQueryInitializeEXT(ray_query, DEPTH_AS, 0, 0xFF, vec3(0, 0, 0), 0.000001, normalize(view_vec), 15.0);
+
+  float t_hit = -1.f;  
+  uint iterations = 0;
+  while (rayQueryProceedEXT(ray_query)) {
+    if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
+      t_hit = rayQueryGetIntersectionTEXT(ray_query, false);
+      rayQueryGenerateIntersectionEXT(ray_query, t_hit);
+      iterations++;
+      break;
+      
+      /*vec3 hit_vec = view_vec + t_hit * R;
+      vec3 hit_uv = project_view_vec(hit_vec, fovy, aspect, znear, zfar);
+      if (hit_uv.z > texture(DEPTH, hit_uv.xy).x + 0.001) {
+        rayQueryGenerateIntersectionEXT(ray_query, t_hit);
+      }
+      iterations++;*/
+    }
+  }
+  /*if (rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+    t_hit = rayQueryGetIntersectionTEXT(ray_query, true);
+  }*/
+   
+  //vec3 hit_vec = view_vec * t_hit;// * R;
+  //vec3 hit_uv = project_view_vec(hit_vec, fovy, aspect, znear, zfar);
+  //vec4 hit_color = texture(ALBEDO, hit_uv.xy);
+  vec4 hit_color = vec4(0, 0, 0, 0);
+  hit_color.w = iterations/100.f;
+  hit_color.xyz = vec3(20.f, t_hit, t_hit)/20.f;
+  if (t_hit < 0.f)
+    hit_color.xyz = vec3(0, 0, 0);
+  imageStore(OUT_REFLECTION, pixel_pos, hit_color);
+#endif
+}

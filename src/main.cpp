@@ -29,11 +29,14 @@ namespace fs = std::filesystem;
 #include "image_readback.hpp"
 #include "advanced_ssr.hpp"
 #include "taa.hpp"
+#include "depth_as.hpp"
+#include "rtfx.hpp"
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <lib/stb_image_write.h>
 
 #define ENABLE_VALIDATION 1
-#define USE_RAY_QUERY 0
+#define USE_RAY_QUERY 1
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(
   VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
@@ -253,6 +256,7 @@ int main(int argc, char **argv) {
   GTAO gtao {render_graph, WIDTH, HEIGHT, USE_RAY_QUERY, 1};
   AdvancedSSR ssr {render_graph, WIDTH, HEIGHT};
   TAA taa_pass {render_graph, WIDTH, HEIGHT};
+  RTReflections rt_reflections {render_graph, WIDTH/2, HEIGHT/2};
 
   ssr.preintegrate_pdf(render_graph);
   ssr.preintegrate_brdf(render_graph);
@@ -260,6 +264,12 @@ int main(int argc, char **argv) {
   SceneRenderer scene_renderer {scene};
   scene_renderer.init_pipeline(render_graph, gbuffer);
   DeferedShadingPass shading_pass {render_graph, app_init.window};  
+  
+  DepthAs screen_space_as;
+  DepthAsBuilder screen_space_as_builder;
+
+  screen_space_as.create(transfer_pool, WIDTH/2, HEIGHT/2);
+  screen_space_as_builder.init(WIDTH/2, HEIGHT/2);
 
   imgui_create_fonts(transfer_pool);
 
@@ -330,9 +340,10 @@ int main(int argc, char **argv) {
 
     SamplesMarker::clear(render_graph);
 
-    scene_renderer.draw_taa(render_graph, gbuffer, draw_params);
-    //scene_renderer.render_shadow(render_graph, shadow_mvp, shadows_tex, 0);    
+    scene_renderer.draw_taa(render_graph, gbuffer, draw_params);    
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
+
+    screen_space_as_builder.run(render_graph, screen_space_as, gbuffer.depth, 1, draw_params);
 
     ImGui::Begin("Read texture");
     bool depth = ImGui::Button("Depth") && (image_read_back == INVALID_READBACK);
@@ -356,6 +367,7 @@ int main(int argc, char **argv) {
     auto normal_mat = glm::transpose(glm::inverse(camera.get_view_mat()));
     auto camera_to_world = glm::inverse(camera.get_view_mat());
     GTAOParams gtao_params {normal_mat, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
+    GTAORTParams gtao_rt_params {camera_to_world, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
     AdvancedSSRParams assr_params {normal_mat, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};    
     
     ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw);
@@ -381,7 +393,9 @@ int main(int argc, char **argv) {
       image_read_back = readback_system.read_image(render_graph, readback_image);
     }
     
-    add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
+    rt_reflections.run(render_graph, gbuffer, screen_space_as, assr_params);
+
+    add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
     //add_backbuffer_subpass(render_graph, gtao.accumulated_ao, sampler, DrawTex::ShowR);
     //add_backbuffer_subpass(render_graph, ssr.get_blurred(), sampler, DrawTex::ShowAll);
     add_present_subpass(render_graph);
