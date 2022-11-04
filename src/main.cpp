@@ -205,8 +205,12 @@ static void load_shaders(const fs::path &config_path) {
   }
 }
 
-const uint32_t WIDTH = 1280;
-const uint32_t HEIGHT = 720;
+//const uint32_t WIDTH = 1280;
+//const uint32_t HEIGHT = 720;
+const uint32_t WIDTH = 1920;
+const uint32_t HEIGHT = 1080;
+//const uint32_t WIDTH = 2560;
+//const uint32_t HEIGHT = 1440;
 
 rendergraph::ImageResourceId create_readbackimage(rendergraph::RenderGraph &graph) {
   gpu::ImageInfo image_info {VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, WIDTH, HEIGHT};
@@ -265,11 +269,11 @@ int main(int argc, char **argv) {
   scene_renderer.init_pipeline(render_graph, gbuffer);
   DeferedShadingPass shading_pass {render_graph, app_init.window};  
   
-  DepthAs screen_space_as;
-  DepthAsBuilder screen_space_as_builder;
+  //DepthAs screen_space_as;
+  //DepthAsBuilder screen_space_as_builder;
 
-  screen_space_as.create(transfer_pool, WIDTH/2, HEIGHT/2);
-  screen_space_as_builder.init(WIDTH/2, HEIGHT/2);
+  //screen_space_as.create(transfer_pool, WIDTH/2, HEIGHT/2);
+  //screen_space_as_builder.init(WIDTH/2, HEIGHT/2);
 
   imgui_create_fonts(transfer_pool);
 
@@ -340,10 +344,13 @@ int main(int argc, char **argv) {
 
     SamplesMarker::clear(render_graph);
 
-    scene_renderer.draw_taa(render_graph, gbuffer, draw_params);    
+    //scene_renderer.draw_taa(render_graph, gbuffer, draw_params);
+    scene_renderer.rasterize_triange_id(render_graph, gbuffer, draw_params);
+    scene_renderer.reconstruct_gbuffer(render_graph, gbuffer, draw_params);
+
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
 
-    screen_space_as_builder.run(render_graph, screen_space_as, gbuffer.depth, 1, draw_params);
+    //screen_space_as_builder.run(render_graph, screen_space_as, gbuffer.depth, 1, draw_params);
 
     ImGui::Begin("Read texture");
     bool depth = ImGui::Button("Depth") && (image_read_back == INVALID_READBACK);
@@ -393,9 +400,9 @@ int main(int argc, char **argv) {
       image_read_back = readback_system.read_image(render_graph, readback_image);
     }
     
-    rt_reflections.run(render_graph, gbuffer, screen_space_as, assr_params);
+    //rt_reflections.run(render_graph, gbuffer, screen_space_as, assr_params);
 
-    add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
+    add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
     //add_backbuffer_subpass(render_graph, gtao.accumulated_ao, sampler, DrawTex::ShowR);
     //add_backbuffer_subpass(render_graph, ssr.get_blurred(), sampler, DrawTex::ShowAll);
     add_present_subpass(render_graph);

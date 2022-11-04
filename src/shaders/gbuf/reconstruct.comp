@@ -1,0 +1,130 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : enable 
+
+#include <gbuffer_encode.glsl>
+#include <triangle_id.glsl>
+
+layout (set = 0, binding = 0) uniform Constants {
+  mat4 camera;
+  mat4 view_projection;
+  mat4 prev_view_projection;
+  vec4 jitter;
+  vec4 fovy_aspect_znear_zfar;
+};
+
+layout (set = 0, binding = 1, std430) readonly buffer TransformBuffer {
+  Transform TRANSFORMS[];
+};
+
+layout (set = 0, binding = 2, std430) readonly buffer VertexBuffer {
+  Vertex VERTICES[];
+};
+
+layout (set = 0, binding = 3, std430) readonly buffer IndexBuffer {
+  uint INDEXES[];
+};
+
+layout (set = 0, binding = 4, std430) readonly buffer MaterialBuffer {
+  Material MATERIALS[];
+};
+
+layout (set = 0, binding = 5, std430) readonly buffer PrimitiveBuffer {
+  Primitive PRIMITIVES[];
+};
+
+layout (set = 0, binding = 6) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 7) uniform usampler2D TRIANGLE_ID_TEX;
+
+layout (set = 0, binding = 8, rgba8) uniform image2D ALBEDO_TEX;
+layout (set = 0, binding = 9, rg16) uniform image2D NORMAL_TEX;
+layout (set = 0, binding = 10, rgba8) uniform image2D MATERIAL_TEX;
+layout (set = 0, binding = 11, rg16f) uniform image2D VELOCITY_TEX;
+
+layout (set = 1, binding = 0) uniform sampler2D BINDLESS_MATERIAL_TEX[];
+
+layout(local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = ivec2(imageSize(ALBEDO_TEX).xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (all(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+
+  uint rawid = texture(TRIANGLE_ID_TEX, screen_uv).x;
+  if (rawid == INVALID_TRIANGLE_ID) {
+    imageStore(ALBEDO_TEX, pixel_pos, vec4(0, 0, 0, 0));
+    imageStore(NORMAL_TEX, pixel_pos, vec4(0, 0, 0, 0));
+    imageStore(MATERIAL_TEX, pixel_pos, vec4(0, 0, 0, 0));
+    imageStore(VELOCITY_TEX, pixel_pos, vec4(0, 0, 0, 0));
+  }
+
+  TriangleID tid = unpack_triangle_id(rawid);
+  Primitive primitive = PRIMITIVES[tid.primitive_index];
+
+  uint index = 3 * tid.triangle_index + primitive.index_offset;
+  Vertex vert0 = VERTICES[primitive.vertex_offset + INDEXES[index + 0]];
+  Vertex vert1 = VERTICES[primitive.vertex_offset + INDEXES[index + 1]];
+  Vertex vert2 = VERTICES[primitive.vertex_offset + INDEXES[index + 2]];
+
+  vec3 v0 = get_vertex_pos(vert0);
+  vec3 v1 = get_vertex_pos(vert1);
+  vec3 v2 = get_vertex_pos(vert2); 
+  
+  mat4 transform = TRANSFORMS[tid.transform_index].model;
+  v0 = vec3(transform * vec4(v0, 1));
+  v1 = vec3(transform * vec4(v1, 1));
+  v2 = vec3(transform * vec4(v2, 1));
+
+  vec4 v0_after = view_projection * vec4(v0, 1);
+  vec4 v1_after = view_projection * vec4(v1, 1);
+  vec4 v2_after = view_projection * vec4(v2, 1);
+
+  vec4 v0_before = prev_view_projection * vec4(v0, 1);
+  vec4 v1_before = prev_view_projection * vec4(v1, 1);
+  vec4 v2_before = prev_view_projection * vec4(v2, 1);  
+
+  v0 = vec3(camera * vec4(v0, 1));
+  v1 = vec3(camera * vec4(v1, 1));
+  v2 = vec3(camera * vec4(v2, 1));
+
+  vec3 view_vec = get_view_vec(screen_uv, fovy_aspect_znear_zfar.x, fovy_aspect_znear_zfar.y, fovy_aspect_znear_zfar.z);
+  vec3 dx_vec = get_view_vec(vec2(pixel_pos + vec2(0.75, 0.5))/vec2(tex_size), fovy_aspect_znear_zfar.x, fovy_aspect_znear_zfar.y, fovy_aspect_znear_zfar.z);
+  vec3 dy_vec = get_view_vec(vec2(pixel_pos + vec2(0.5, 0.75))/vec2(tex_size), fovy_aspect_znear_zfar.x, fovy_aspect_znear_zfar.y, fovy_aspect_znear_zfar.z);
+
+  vec3 bc = trace_barycentric_coords(view_vec, v0, v1, v2);
+  vec3 bc_dx = trace_barycentric_coords(dx_vec, v0, v1, v2);
+  vec3 bc_dy = trace_barycentric_coords(dy_vec, v0, v1, v2);
+  
+  vec4 pos_after = bc.x * v0_after + bc.y * v1_after + bc.z * v2_after;
+  vec4 pos_before = bc.x * v0_before + bc.y * v1_before + bc.z * v2_before;
+
+  vec2 velocity_vector = 0.5 * (pos_before.xy/pos_before.w - pos_after.xy/pos_after.w); 
+
+  vec2 triangle_uv = bc.x * get_vertex_uv(vert0) + bc.y * get_vertex_uv(vert1) + bc.z * get_vertex_uv(vert2);
+  vec2 triangle_uv_dx = bc_dx.x * get_vertex_uv(vert0) + bc_dx.y * get_vertex_uv(vert1) + bc_dx.z * get_vertex_uv(vert2);
+  vec2 triangle_uv_dy = bc_dy.x * get_vertex_uv(vert0) + bc_dy.y * get_vertex_uv(vert1) + bc_dy.z * get_vertex_uv(vert2);
+  
+  vec2 duv_dx = (triangle_uv_dx - triangle_uv) * 4;
+  vec2 duv_dy = (triangle_uv_dy - triangle_uv) * 4;
+
+  vec3 normal = bc.x * get_vertex_norm(vert0) + bc.y * get_vertex_norm(vert1) + bc.z * get_vertex_norm(vert2);
+  
+  normal = vec3(TRANSFORMS[tid.transform_index].normal * vec4(normal, 0)); 
+
+  Material material = MATERIALS[primitive.material_index];
+  uint albedo_index = material.albedo_tex_index;
+  
+  vec4 final_color = vec4(0.5, 0.5, 0.5, 0);
+  
+  if (albedo_index != ~0)
+    final_color = textureGrad(BINDLESS_MATERIAL_TEX[albedo_index], triangle_uv, duv_dx, duv_dy);
+  
+  vec4 material_color = textureGrad(BINDLESS_MATERIAL_TEX[material.metalic_roughness_index], triangle_uv, duv_dx, duv_dy);
+
+  imageStore(ALBEDO_TEX, pixel_pos, final_color);
+  imageStore(NORMAL_TEX, pixel_pos, vec4(encode_normal(normal), 0, 0));
+  imageStore(MATERIAL_TEX, pixel_pos, material_color);
+  imageStore(VELOCITY_TEX, pixel_pos, vec4(velocity_vector, 0, 0));
+}

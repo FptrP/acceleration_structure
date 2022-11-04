@@ -19,6 +19,7 @@ struct Gbuffer {
   rendergraph::ImageResourceId prev_depth;
   rendergraph::ImageResourceId velocity_vectors;
   rendergraph::ImageResourceId downsampled_velocity_vectors;
+  rendergraph::ImageResourceId triangle_id;
 
   uint32_t w, h;
 };
@@ -39,11 +40,13 @@ struct SceneRenderer {
   void update_scene();
   
   void draw_taa(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DrawTAAParams &params);
-  void render_shadow(rendergraph::RenderGraph &graph, const glm::mat4 &shadow_mvp, rendergraph::ImageResourceId out_tex, uint32_t layer);
+
+  void rasterize_triange_id(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DrawTAAParams &params);
+  void reconstruct_gbuffer(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DrawTAAParams &params);
 
   struct DrawCall {
     uint32_t transform;
-    uint32_t mesh;
+    uint32_t primitive;
   };
   
   const std::vector<DrawCall> &get_drawcalls() const { return draw_calls; }
@@ -54,13 +57,16 @@ struct SceneRenderer {
 private:
   scene::CompiledScene &target;
   gpu::GraphicsPipeline opaque_taa_pipeline;
-  gpu::GraphicsPipeline shadow_pipeline;
+  gpu::GraphicsPipeline triangle_id_pipeline;
+  gpu::ComputePipeline reconstruct_pipeline;
+
   gpu::ManagedDescriptorSet bindless_textures {}; 
 
   std::vector<std::pair<VkImageView, VkSampler>> scene_textures;
   std::vector<DrawCall> draw_calls;
   VkSampler sampler;
-  
+  VkSampler integer_sampler;
+
   rendergraph::BufferResourceId transform_buffer;
 };
 

@@ -15,6 +15,13 @@
     "vertex" : "gbuf/opaque_taa_vert",
     "fragment" : "gbuf/opaque_taa_frag"
   },
+  "gbuf_triangle_id" : {
+    "vertex" : "gbuf/triangle_id_vert",
+    "fragment" : "gbuf/triangle_id_frag"
+  },
+  "gbuf_reconstruct" : {
+    "compute" : "gbuf/reconstruct_comp"
+  },
   "defered_shading" : {
     "vertex" : "defered_shading/shader_vert",
     "fragment" : "defered_shading/shader_frag"

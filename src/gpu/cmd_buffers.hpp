@@ -187,6 +187,7 @@ namespace gpu {
     void bind_index_buffer(VkBuffer buffer, uint64_t offset, VkIndexType type);
 
     void clear_color_attachments(float r, float g, float b, float a);
+    void clear_color_attachments(uint32_t r, uint32_t  g, uint32_t  b, uint32_t  a);
     void clear_depth_attachment(float val);
 
     void draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance);

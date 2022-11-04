@@ -47,6 +47,9 @@ namespace gpu {
       api_binding.binding = spv_binding.binding;
       api_binding.descriptorType = spv_desc_type;
       api_binding.stageFlags = stage;
+      if (spv_bindless)
+        api_binding.stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
+
       api_binding.descriptorCount = spv_binding_count;
       
       valid_bindings.set(spv_binding.binding);

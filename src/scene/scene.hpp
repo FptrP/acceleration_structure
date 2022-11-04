@@ -26,33 +26,21 @@ namespace scene {
   };
 
   struct BaseMesh {
-    std::vector<Primitive> primitives;
+    std::vector<uint32_t> primitive_indexes;
   };
 
   struct BaseNode {
     glm::mat4 transform;
     std::vector<BaseNode> children;
-    int mesh_index;
-  };
-
-  struct Mesh {
-    uint32_t vertex_offset;
-    uint32_t index_offset;
-    uint32_t index_count;
-    uint32_t material_index;
+    int mesh_index = -1;
+    int transform_index = -1;
   };
 
   struct Material {
     uint32_t albedo_tex_index = INVALID_TEXTURE;
     uint32_t metalic_roughness_index = INVALID_TEXTURE;
-    bool clip_alpha = false;
+    uint32_t clip_alpha = 0;
     float alpha_cutoff = 0.f;
-  };
-
-  struct Node {
-    glm::mat4 transform;
-    std::vector<uint32_t> meshes;
-    std::vector<std::unique_ptr<Node>> children;
   };
 
   struct Texture {
@@ -69,13 +57,19 @@ namespace scene {
     CompiledScene(CompiledScene &) = delete;
     CompiledScene &operator=(CompiledScene &) = delete;
 
+    uint32_t transforms_count = 0;
+    
     std::vector<Material> materials;
     gpu::BufferPtr vertex_buffer;
     gpu::BufferPtr index_buffer;
-    std::vector<gpu::ImagePtr> images;
-    
+    gpu::BufferPtr primitive_buffer;
+    gpu::BufferPtr material_buffer;
+
+    std::vector<gpu::ImagePtr> images;    
     std::vector<VkSampler> samplers;
     std::vector<Texture> textures;
+
+    std::vector<Primitive> primitives;
     std::vector<BaseMesh> root_meshes;
     std::vector<BaseNode> base_nodes;
   };

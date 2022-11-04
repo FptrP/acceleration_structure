@@ -175,7 +175,7 @@ namespace scene {
       mat.albedo_tex_index = src.pbrMetallicRoughness.baseColorTexture.index;
       mat.metalic_roughness_index = src.pbrMetallicRoughness.metallicRoughnessTexture.index;
       mat.alpha_cutoff = src.alphaCutoff;
-      mat.clip_alpha = src.alphaMode == "MASK";
+      mat.clip_alpha = (src.alphaMode == "MASK")? 1u : 0u;
       std::cout << "Material " << mat.albedo_tex_index << " " << mat.metalic_roughness_index << "\n";
       out_scene.materials.push_back(mat);
     }
@@ -271,14 +271,19 @@ namespace scene {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indexes;
 
+    out_scene.primitives.clear();
+
     out_scene.root_meshes.reserve(model.meshes.size());
     for (const auto &src : model.meshes) {
       BaseMesh base_mesh;
-      base_mesh.primitives.reserve(src.primitives.size());
+      base_mesh.primitive_indexes.reserve(src.primitives.size());
+      uint32_t primitive_index = out_scene.primitives.size();
 
       for (const auto &prim : src.primitives) {
         auto res = tinygltf_load_prim(model, prim, vertices, indexes); 
-        base_mesh.primitives.push_back(res);
+        out_scene.primitives.push_back(std::move(res));
+        base_mesh.primitive_indexes.push_back(primitive_index);
+        primitive_index++;
       }
 
       out_scene.root_meshes.push_back(std::move(base_mesh));
@@ -286,23 +291,30 @@ namespace scene {
     //upload vertices
     const uint64_t verts_size = sizeof(Vertex) * vertices.size();
     const uint64_t index_size = sizeof(uint32_t) * indexes.size();
+    const uint64_t prim_size = sizeof(Primitive) * out_scene.primitives.size();
+    const uint64_t mat_size = sizeof(Material) * out_scene.materials.size();
 
-    VkBufferUsageFlags ray_tracing_flags = 0; 
+    VkBufferUsageFlags buffer_flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; 
     if (for_ray_tracing) {
-      ray_tracing_flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+      buffer_flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     }
 
-    out_scene.vertex_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, verts_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|ray_tracing_flags);
-    out_scene.index_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, index_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|ray_tracing_flags);
-
-    const uint32_t TRANSFER_SIZE = 10 * 1024;
+    out_scene.vertex_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, verts_size, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT|buffer_flags);
+    out_scene.index_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, index_size, VK_BUFFER_USAGE_INDEX_BUFFER_BIT|buffer_flags);
+    
+    out_scene.primitive_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, prim_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    out_scene.material_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, mat_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  
+    const uint32_t TRANSFER_SIZE = 1024 * 1024;
     auto transfer_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_CPU_TO_GPU, TRANSFER_SIZE, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
     
     copy_data(transfer_pool, out_scene.vertex_buffer, transfer_buffer, verts_size, (uint8_t*)vertices.data());
     copy_data(transfer_pool, out_scene.index_buffer, transfer_buffer, index_size, (uint8_t*)indexes.data());
+    copy_data(transfer_pool, out_scene.primitive_buffer, transfer_buffer, prim_size, (uint8_t*)out_scene.primitives.data());
+    copy_data(transfer_pool, out_scene.material_buffer, transfer_buffer, mat_size, (uint8_t*)out_scene.materials.data());
   }
 
-  static void tinygltf_load_nodes(const tinygltf::Model &model, const tinygltf::Node &src_node, BaseNode &out_node) {
+  static void tinygltf_load_nodes(CompiledScene &out_scene, const tinygltf::Model &model, const tinygltf::Node &src_node, BaseNode &out_node) {
     out_node.transform = glm::identity<glm::mat4>();
     out_node.mesh_index = src_node.mesh;
 
@@ -322,8 +334,16 @@ namespace scene {
     }
     out_node.children.resize(src_node.children.size());
 
+    if (out_node.mesh_index >= 0) {
+      out_node.transform_index = out_scene.transforms_count;
+      out_scene.transforms_count++;
+    }
+    else {
+      out_node.transform_index = -1;
+    }
+
     for (uint32_t i = 0; i < src_node.children.size(); i++) {
-      tinygltf_load_nodes(model, model.nodes[src_node.children[i]], out_node.children[i]);
+      tinygltf_load_nodes(out_scene, model, model.nodes[src_node.children[i]], out_node.children[i]);
     }
   }
 
@@ -338,7 +358,7 @@ namespace scene {
     }
     auto folder = fs::path{path}.parent_path();
     tinygltf_load_materials(transfer_pool, folder, model, result_scene);
-    tinygltf_load_meshes(transfer_pool, folder, model, result_scene, for_ray_traing);
+    tinygltf_load_meshes(transfer_pool, folder, model, result_scene, for_ray_traing); //call only after load_materials
     
     int default_scene = std::max(0, model.defaultScene);
     const auto &scene = model.scenes[default_scene];
@@ -350,12 +370,24 @@ namespace scene {
     for (uint32_t i = 0; i < scene.nodes.size(); i++) {
       auto node_id = scene.nodes[i];
       std::cout << "Loading node " << node_id << "\n";
-      tinygltf_load_nodes(model, model.nodes[node_id], result_scene.base_nodes[i]);
+      tinygltf_load_nodes(result_scene, model, model.nodes[node_id], result_scene.base_nodes[i]);
     }
     
     if (!warn.empty()) {
       std::cout << "[W] " << warn.c_str() << "\n";
     }
+
+    std::cout << "Loaded scene ";
+    std::cout << result_scene.primitives.size() << " primitives ";
+    std::cout << result_scene.transforms_count << " transforms\n";
+    
+    uint32_t max_triangles = 0;
+    for (const auto &prim : result_scene.primitives) {
+      max_triangles = std::max(max_triangles, prim.index_count/3);
+    }
+
+    std::cout << "Max triangels per primitive " << max_triangles << "\n";
+
     return result_scene;
   }
 

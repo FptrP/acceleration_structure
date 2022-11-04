@@ -68,6 +68,18 @@ vec3 reconstruct_view_vec(vec2 uv, float d, float fovy, float aspect, float z_ne
   return vec3(x, y, z);
 }
 
+vec3 get_view_vec(vec2 uv, float fovy, float aspect, float z_near) {
+  float tg_alpha = tan(fovy/2);
+  float z = -z_near;
+
+  float xd = 2 * uv.x - 1;
+  float yd = 2 * uv.y - 1;
+
+  float x = -(xd) * (z * aspect * tg_alpha);
+  float y = -(yd) * (z * tg_alpha);
+  return normalize(vec3(x, y, z));
+}
+
 float encode_depth(float z, float n, float f) {
   return f/(f-n) + f*n/(z * (f - n));
 }

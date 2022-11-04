@@ -291,6 +291,35 @@ namespace gpu {
     }
   }
 
+  void CmdContext::clear_color_attachments(uint32_t r, uint32_t  g, uint32_t  b, uint32_t  a) {
+    const auto &desc = gfx_pipeline->get_renderpass_desc();
+    uint32_t count = desc.formats.size();
+    if (desc.use_depth) {
+      count--;
+    }
+
+    VkClearAttachment clear {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .colorAttachment = 0
+    };
+
+    clear.clearValue.color.uint32[0] = r;
+    clear.clearValue.color.uint32[1] = g;
+    clear.clearValue.color.uint32[2] = b;
+    clear.clearValue.color.uint32[3] = a;
+
+    VkClearRect clear_rect {
+      .rect {{0, 0}, {fb_state.get_width(), fb_state.get_height()}},
+      .baseArrayLayer = 0,
+      .layerCount = 1
+    };
+
+    for (uint32_t i = 0; i < count; i++) {
+      clear.colorAttachment = i;
+      vkCmdClearAttachments(cmd, 1, &clear, 1, &clear_rect);
+    }
+  }
+
   void CmdContext::clear_depth_attachment(float val) {
     const auto &desc = gfx_pipeline->get_renderpass_desc();
 

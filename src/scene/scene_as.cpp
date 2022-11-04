@@ -33,9 +33,9 @@ namespace scene {
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> prim_data;
     std::vector<uint32_t> geometry_prims;
 
-    geometry_data.reserve(mesh.primitives.size());
-    prim_data.reserve(mesh.primitives.size());
-    geometry_prims.reserve(mesh.primitives.size());
+    geometry_data.reserve(mesh.primitive_indexes.size());
+    prim_data.reserve(mesh.primitive_indexes.size());
+    geometry_prims.reserve(mesh.primitive_indexes.size());
 
     VkAccelerationStructureGeometryTrianglesDataKHR triangles {
       .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
@@ -57,7 +57,8 @@ namespace scene {
       .flags = VK_GEOMETRY_OPAQUE_BIT_KHR,
     };
 
-    for (const auto &prim : mesh.primitives) {
+    for (auto prim_index : mesh.primitive_indexes) {
+      const auto &prim = source.primitives.at(prim_index);
       VkAccelerationStructureBuildRangeInfoKHR build_range {
         .primitiveCount = prim.index_count/3,
         .primitiveOffset = uint32_t(prim.index_offset * sizeof(uint32_t)),
