@@ -109,6 +109,45 @@ ReadBackID ReadBackSystem::read_image(rendergraph::RenderGraph &graph, rendergra
   return id;
 }
 
+ReadBackID ReadBackSystem::read_buffer(rendergraph::RenderGraph &graph, rendergraph::BufferResourceId buffer_id, uint64_t offset, uint64_t size) {
+  struct TaskData {};
+
+  const auto &buffer = graph.get_buffer(buffer_id);
+  if (!size) {
+    size = buffer->get_size();
+  }
+  
+  if (offset + size > buffer->get_size()) {
+    throw std::runtime_error {"ReadBack out of buffer bounds"};
+  }
+
+  auto readback_buf = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_TO_CPU, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  auto dst_buffer = readback_buf->api_buffer();
+  
+  ReadBackID id = next_request_id;
+  next_request_id++;
+
+  requests[id] = Request {graph.get_frames_count() + 1, (uint32_t)size, 1, VK_FORMAT_UNDEFINED, 1, std::move(readback_buf)};
+
+  graph.add_task<TaskData>("BufferRead",
+    [&](TaskData &, rendergraph::RenderGraphBuilder &builder) {
+      builder.transfer_read(buffer_id);
+    },
+    [=](TaskData &, rendergraph::RenderResources &resources, gpu::CmdContext &ctx) {
+      auto api_cmd = ctx.get_command_buffer();
+      auto src_buf = resources.get_buffer(buffer_id)->api_buffer();
+      
+      VkBufferCopy region {
+        .srcOffset = offset,
+        .dstOffset = 0,
+        .size = size
+      };
+      vkCmdCopyBuffer(api_cmd, src_buf, dst_buffer, 1, &region);
+    });
+
+  return id;
+}
+
 void ReadBackSystem::after_submit(rendergraph::RenderGraph &graph) {
   auto it = requests.begin();
   while(it != requests.end()) {

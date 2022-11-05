@@ -35,6 +35,7 @@ namespace rendergraph {
     void use_indirect_buffer(BufferResourceId id);
 
     void transfer_read(ImageResourceId id, uint32_t base_mip, uint32_t mip_count, uint32_t base_layer, uint32_t layer_count);
+    void transfer_read(BufferResourceId id);
     void transfer_write(ImageResourceId id, uint32_t base_mip, uint32_t mip_count, uint32_t base_layer, uint32_t layer_count);
     void transfer_write(BufferResourceId id);
 
@@ -138,6 +139,8 @@ namespace rendergraph {
 
     gpu::ImageInfo get_descriptor(ImageResourceId id) const;
     ImageResourceId get_backbuffer() const;
+
+    const gpu::BufferPtr &get_buffer(BufferResourceId id) const;
 
     void remap(ImageResourceId src, ImageResourceId dst);
 

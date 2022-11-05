@@ -5,9 +5,9 @@
 #include "advanced_ssr.hpp"
 
 struct RTReflections {
-  RTReflections(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height);
+  RTReflections(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height, bool triangles);
   
-  void run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DepthAs &depth_as, const AdvancedSSRParams &params);
+  void run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, VkAccelerationStructureKHR depth_as, const AdvancedSSRParams &params);
 
   rendergraph::ImageResourceId get_target() const {
     return result;

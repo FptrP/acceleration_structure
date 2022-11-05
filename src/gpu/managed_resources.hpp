@@ -100,7 +100,8 @@ namespace gpu {
   };
 
   struct DriverBuffer : DriverResource {
-    DriverBuffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage);
+    DriverBuffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage, VkDeviceSize alignment = 0);
+
     ~DriverBuffer();
     
     void flush(uint64_t offset = 0, uint64_t size = VK_WHOLE_SIZE);
@@ -168,7 +169,7 @@ namespace gpu {
   void collect_image_buffer_resources();
   void destroy_resources();
 
-  BufferPtr create_buffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage);
+  BufferPtr create_buffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage, VkDeviceSize alignment = 0);
   
   ImagePtr create_tex2d(VkFormat fmt, uint32_t w, uint32_t h, uint32_t mips, VkImageUsageFlags usage);
   ImagePtr create_tex2d_mips(VkFormat fmt, uint32_t w, uint32_t h, VkImageUsageFlags usage);

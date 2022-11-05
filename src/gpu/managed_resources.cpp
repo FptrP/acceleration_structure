@@ -126,7 +126,7 @@ namespace gpu {
     ptr = g_res_manager.acquire_resource(new_id);
   }
 
-  DriverBuffer::DriverBuffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage) {
+  DriverBuffer::DriverBuffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage, VkDeviceSize alignment) {
     VkBufferCreateInfo buffer_info {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
       .pNext = nullptr,
@@ -145,9 +145,11 @@ namespace gpu {
     VmaAllocationInfo info {};
     
     auto base = app_device().get_allocator();
-
-    VKCHECK(vmaCreateBuffer(base, &buffer_info, &alloc_info, &handle, &allocation, &info));
-    
+    if (alignment != 0) {
+      VKCHECK(vmaCreateBufferWithAlignment(base, &buffer_info, &alloc_info, alignment, &handle, &allocation, &info));
+    } else {
+      VKCHECK(vmaCreateBuffer(base, &buffer_info, &alloc_info, &handle, &allocation, &info));
+    }
     VkMemoryPropertyFlags mem_flags = 0;
     vmaGetMemoryTypeProperties(base, info.memoryType, &mem_flags);
     coherent = mem_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT; 
@@ -277,8 +279,8 @@ namespace gpu {
     }
   }
 
-  BufferPtr create_buffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage) {
-    auto *dbuf = new DriverBuffer {memory, buffer_size, usage}; 
+  BufferPtr create_buffer(VmaMemoryUsage memory, uint64_t buffer_size, VkBufferUsageFlags usage, VkDeviceSize alignment) {
+    auto *dbuf = new DriverBuffer {memory, buffer_size, usage, alignment}; 
     auto id = g_res_manager.register_resource(dbuf, false);
     return BufferPtr {id};
   }

@@ -21,7 +21,8 @@ const ReadBackID INVALID_READBACK = ~0ull;
 struct ReadBackSystem {
   ReadBackID read_image(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId image);
   ReadBackID read_image(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId image, VkImageAspectFlags aspect, uint32_t mip, uint32_t layer);
-
+  ReadBackID read_buffer(rendergraph::RenderGraph &graph, rendergraph::BufferResourceId buffer, uint64_t offset = 0, uint64_t size = 0);
+  
   void after_submit(rendergraph::RenderGraph &graph);
   bool is_data_available(ReadBackID id) const { return processed_requests.count(id); }
 

@@ -9,5 +9,6 @@ void gen_mipmaps(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId i
 void clear_depth(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId image, float val = 1.0);
 void clear_color(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId image, VkClearColorValue val);
 void blit_image(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId src, rendergraph::ImageResourceId dst);
+void buffer_clear(rendergraph::RenderGraph &graph, rendergraph::BufferResourceId buffer, uint32_t value);
 
 #endif

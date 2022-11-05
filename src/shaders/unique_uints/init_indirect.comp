@@ -1,0 +1,19 @@
+#version 460
+
+layout (set = 0, binding = 0, std430) buffer IndirectBuffer {
+  uint size_x;
+  uint size_y;
+  uint size_z;
+};
+
+layout (set = 0, binding = 1) readonly buffer IdBuffer {
+  uint count;
+  uint candidates[];
+};
+
+layout (local_size_x = 1) in;
+void main() {
+  size_x = (count + 31)/32;
+  size_y = 1;
+  size_z = 1;
+}

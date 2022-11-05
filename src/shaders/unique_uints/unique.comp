@@ -1,0 +1,42 @@
+#version 460
+
+layout (set = 0, binding = 0) readonly buffer InputCandidates {
+  uint CANDIDATES_COUNT;
+  uint CANDIDATE_IDS[];
+};
+
+layout (set = 0, binding = 1) buffer HashmapBuffer {
+  uint HASH_TABLE[];
+};
+
+layout (set = 0, binding = 2) buffer OutUniqueIDs {
+  uint ID_COUNT;
+  uint UNIQUE_IDS[];
+};
+
+const int WARP_SIZE = 32;
+const uint MAX_ELEMS_COUNT = (1u << 17u); 
+const uint HASH_MASK = (MAX_ELEMS_COUNT - 1u);
+const uint INVALID_VAL = ~0u;
+
+layout (local_size_x = WARP_SIZE) in;
+void main() {
+  uint start_index = 4 * (gl_WorkGroupID.x * WARP_SIZE + gl_LocalInvocationID.x);
+  uint end_index = min(CANDIDATES_COUNT, start_index + 4);
+
+  for (uint i = start_index; i < end_index; i++) {
+    uint value = CANDIDATE_IDS[i];
+    uint bucket = value & HASH_MASK;
+    uint readed_val = INVALID_VAL;
+
+    do {
+      readed_val = atomicCompSwap(HASH_TABLE[bucket], INVALID_VAL, value);
+      bucket = (bucket + 1) & HASH_MASK;
+    } while (readed_val != INVALID_VAL && readed_val != value);
+
+    if (readed_val == INVALID_VAL) {
+      uint write_index = atomicAdd(ID_COUNT, 1);
+      UNIQUE_IDS[write_index] = value;
+    }
+  }
+}

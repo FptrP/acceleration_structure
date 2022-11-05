@@ -206,6 +206,7 @@ namespace rendergraph {
     const VkImageCreateInfo &get_info(ImageResourceId id) const;
     gpu::ImagePtr &get_image(ImageResourceId id);
     gpu::BufferPtr &get_buffer(BufferResourceId id);
+    const gpu::BufferPtr &get_buffer(BufferResourceId id) const;
 
     const gpu::ImagePtr &get_image(ImageResourceId id) const;
 

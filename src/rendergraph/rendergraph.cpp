@@ -186,6 +186,12 @@ namespace rendergraph {
     tracking_state.add_input(resources, id, BufferState {pipeline_stages, access});
   }
 
+  void RenderGraphBuilder::transfer_read(BufferResourceId id) {
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkAccessFlags access = VK_ACCESS_TRANSFER_READ_BIT;
+    tracking_state.add_input(resources, id, BufferState {stage, access});
+  }
+
   void RenderGraphBuilder::prepare_backbuffer() {
     ImageSubresourceState state {
       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -244,6 +250,10 @@ namespace rendergraph {
     
     res.aspect = resources.get_image(id)->get_default_aspect();
     return res;
+  }
+
+  const gpu::BufferPtr &RenderGraph::get_buffer(BufferResourceId id) const {
+    return resources.get_buffer(id);
   }
 
   RenderGraph::RenderGraph(gpu::Device &device, gpu::Swapchain &swapchain)

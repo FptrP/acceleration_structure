@@ -260,7 +260,7 @@ int main(int argc, char **argv) {
   GTAO gtao {render_graph, WIDTH, HEIGHT, USE_RAY_QUERY, 1};
   AdvancedSSR ssr {render_graph, WIDTH, HEIGHT};
   TAA taa_pass {render_graph, WIDTH, HEIGHT};
-  RTReflections rt_reflections {render_graph, WIDTH/2, HEIGHT/2};
+  RTReflections rt_reflections {render_graph, WIDTH/2, HEIGHT/2, true};
 
   ssr.preintegrate_pdf(render_graph);
   ssr.preintegrate_brdf(render_graph);
@@ -269,6 +269,8 @@ int main(int argc, char **argv) {
   scene_renderer.init_pipeline(render_graph, gbuffer);
   DeferedShadingPass shading_pass {render_graph, app_init.window};  
   
+  TriangleASBuilder triangle_as_builder {render_graph, transfer_pool};
+
   //DepthAs screen_space_as;
   //DepthAsBuilder screen_space_as_builder;
 
@@ -348,6 +350,11 @@ int main(int argc, char **argv) {
     scene_renderer.rasterize_triange_id(render_graph, gbuffer, draw_params);
     scene_renderer.reconstruct_gbuffer(render_graph, gbuffer, draw_params);
 
+    triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera);
+
+    //id_extractor.run(render_graph, gbuffer.triangle_id);
+    //id_extractor.process_readback(render_graph, readback_system);
+
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
 
     //screen_space_as_builder.run(render_graph, screen_space_as, gbuffer.depth, 1, draw_params);
@@ -400,9 +407,10 @@ int main(int argc, char **argv) {
       image_read_back = readback_system.read_image(render_graph, readback_image);
     }
     
-    //rt_reflections.run(render_graph, gbuffer, screen_space_as, assr_params);
+    rt_reflections.run(render_graph, gbuffer, triangle_as_builder.get_tlas(), assr_params);
 
     add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
+    //add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
     //add_backbuffer_subpass(render_graph, gtao.accumulated_ao, sampler, DrawTex::ShowR);
     //add_backbuffer_subpass(render_graph, ssr.get_blurred(), sampler, DrawTex::ShowAll);
     add_present_subpass(render_graph);

@@ -1,13 +1,13 @@
 #include "rtfx.hpp"
 
-RTReflections::RTReflections(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height) {
+RTReflections::RTReflections(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height, bool triangles) {
   gpu::ImageInfo rays_info {VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
   result = graph.create_image(VK_IMAGE_TYPE_2D, rays_info, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_STORAGE_BIT);
-  pipeline = gpu::create_compute_pipeline("trace_depth_as");
+  pipeline = gpu::create_compute_pipeline(triangles? "trace_triangle_as" : "trace_depth_as");
   sampler = gpu::create_sampler(gpu::DEFAULT_SAMPLER);
 }
   
-void RTReflections::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuff, const DepthAs &depth_as, const AdvancedSSRParams &params) {
+void RTReflections::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuff, VkAccelerationStructureKHR depth_as, const AdvancedSSRParams &params) {
 
   struct ShaderParams {
     glm::mat4 normal_mat;
@@ -42,7 +42,7 @@ void RTReflections::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuff, c
       input.normal = builder.sample_image(gbuff.downsampled_normals, VK_SHADER_STAGE_COMPUTE_BIT);
       input.out = builder.use_storage_image(result, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
       input.albedo = builder.sample_image(gbuff.albedo, VK_SHADER_STAGE_COMPUTE_BIT);
-      input.acstruct = depth_as.get_tlas();
+      input.acstruct = depth_as;
     },
     [=](Input &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
       auto set = resources.allocate_set(pipeline, 0);

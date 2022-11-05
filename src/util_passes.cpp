@@ -178,3 +178,14 @@ void blit_image(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId sr
     
     });
 }
+
+void buffer_clear(rendergraph::RenderGraph &graph, rendergraph::BufferResourceId buffer, uint32_t value) {
+  struct Input {};
+  graph.add_task<Input>("BufferClear",
+    [&](Input &, rendergraph::RenderGraphBuilder &builder){
+      builder.transfer_write(buffer);
+    },
+    [=](Input &, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
+      vkCmdFillBuffer(cmd.get_command_buffer(), resources.get_buffer(buffer)->api_buffer(), 0, VK_WHOLE_SIZE, value);
+    });
+}

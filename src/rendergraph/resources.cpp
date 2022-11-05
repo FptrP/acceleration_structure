@@ -108,7 +108,10 @@ namespace rendergraph {
   }
   
   gpu::BufferPtr &GraphResources::get_buffer(BufferResourceId id) {
-    //auto index = buffer_remap.at(id.index);
+    return global_buffers.at(id.index).vk_buffer;
+  }
+
+  const gpu::BufferPtr &GraphResources::get_buffer(BufferResourceId id) const {
     return global_buffers.at(id.index).vk_buffer;
   }
 

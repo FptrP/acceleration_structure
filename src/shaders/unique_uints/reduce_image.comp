@@ -1,0 +1,49 @@
+#version 460
+
+layout (set = 0, binding = 0) uniform usampler2D ID_IMAGE;
+
+layout (set = 0, binding = 1) buffer Accumulator {
+  uint ACCUMULATOR;
+  uint CANDIDATES[];
+};
+
+void hash_insert(uint value);
+
+const uint INVALID_VAL = ~0u;
+
+//32x32 blocks
+const uint ELEMS_COUNT = 32 * 32;
+shared uint HASH_TABLE[ELEMS_COUNT];
+
+layout (local_size_x = 32, local_size_y = 32) in;
+void main() {
+
+  HASH_TABLE[gl_LocalInvocationIndex] = INVALID_VAL;
+
+  barrier();
+
+  ivec2 tex_size = ivec2(textureSize(ID_IMAGE, 0).xy);
+
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  if (all(greaterThanEqual(pixel_pos, tex_size)))
+    return;
+   hash_insert(texelFetch(ID_IMAGE, pixel_pos, 0).x);
+}
+
+void hash_insert(uint value) {
+  if (value == INVALID_VAL)
+    return;
+  uint bucket = value & (ELEMS_COUNT - 1);
+  uint prev = 0;
+
+  do {
+    prev = atomicCompSwap(HASH_TABLE[bucket], INVALID_VAL, value);
+    bucket = (bucket + 1) & (ELEMS_COUNT - 1);
+  } while (prev != INVALID_VAL && prev != value);
+  
+  if (prev == INVALID_VAL) {
+    uint index = atomicAdd(ACCUMULATOR, 1);
+    CANDIDATES[index] = value;
+  }
+    
+}

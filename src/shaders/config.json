@@ -134,5 +134,20 @@
   },
   "trace_depth_as" : {
     "compute" : "depth_as/trace_rays_comp"
+  },
+  "trace_triangle_as" : {
+    "compute" : "depth_as/trace_rays_triangles_comp"
+  },
+  "image_id_reduce" : {
+    "compute" : "unique_uints/reduce_image_comp"
+  },
+  "unique_uints_init" : {
+    "compute" : "unique_uints/init_indirect_comp"
+  },
+  "unique_uints_process" : {
+    "compute" : "unique_uints/unique_comp"
+  },
+  "create_triangles" : {
+    "compute" : "unique_uints/create_triangles_comp"
   }
 }

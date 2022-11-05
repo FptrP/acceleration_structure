@@ -1,7 +1,7 @@
 VERT_SOURCES = $(wildcard */*.vert)
 FRAG_SOURCES = $(wildcard */*.frag)
 COMP_SOURCES = $(wildcard */*.comp)
-GLSL_INCLUDES = $(wildcard include/*.glsl)
+GLSL_INCLUDES = $(wildcard */*.glsl)
 
 VERT_SPV = $(VERT_SOURCES:%.vert=%_vert.spv)
 FRAG_SPV = $(FRAG_SOURCES:%.frag=%_frag.spv)

@@ -1,0 +1,76 @@
+#version 460
+#include <triangle_id.glsl>
+
+layout (push_constant) uniform Constants {
+  mat4 CAMERA_MAT;
+};
+
+layout (set = 0, binding = 0, std430) readonly buffer TransformBuffer {
+  Transform TRANSFORMS[];
+};
+
+layout (set = 0, binding = 1, std430) readonly buffer VertexBuffer {
+  Vertex VERTICES[];
+};
+
+layout (set = 0, binding = 2, std430) readonly buffer IndexBuffer {
+  uint INDEXES[];
+};
+
+layout (set = 0, binding = 3, std430) readonly buffer PrimitiveBuffer {
+  Primitive PRIMITIVES[];
+};
+
+layout (set = 0, binding = 4, std430) readonly buffer TriangleIds {
+  uint ID_COUNT;
+  uint TRIANGLE_IDS[];
+};
+
+struct IndirectArgs {
+  uint primitiveCount;
+  uint primitiveOffset;
+  uint firstVertex;
+  uint transformOffset;
+};
+
+layout (set = 0, binding = 5, std430) buffer BuildIndirectBuffer {
+  IndirectArgs args;
+};
+
+layout (set = 0, binding = 6, std430) buffer TriangleVertsBuffer {
+  float OUT_TRIANGLE_VERTS[];
+};
+
+layout (local_size_x = 32) in;
+void main() {
+  uint index = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x;
+  if (index == 0) {
+    args = IndirectArgs(ID_COUNT, 0, 0, 0);  
+  }
+
+  if (index >= ID_COUNT)
+    return;
+
+  TriangleID id = unpack_triangle_id(TRIANGLE_IDS[index]);
+  Primitive primitive = PRIMITIVES[id.primitive_index];
+  mat4 transform = TRANSFORMS[id.transform_index].model;
+
+  uint vert_index = 3 * id.triangle_index + primitive.index_offset;
+  vec3 v0 = get_vertex_pos(VERTICES[primitive.vertex_offset + INDEXES[vert_index + 0]]);
+  vec3 v1 = get_vertex_pos(VERTICES[primitive.vertex_offset + INDEXES[vert_index + 1]]);
+  vec3 v2 = get_vertex_pos(VERTICES[primitive.vertex_offset + INDEXES[vert_index + 2]]);
+
+  v0 = vec3(CAMERA_MAT * transform * vec4(v0, 1));
+  v1 = vec3(CAMERA_MAT * transform * vec4(v1, 1));
+  v2 = vec3(CAMERA_MAT * transform * vec4(v2, 1));
+
+  OUT_TRIANGLE_VERTS[9 * index + 0] = v0.x;
+  OUT_TRIANGLE_VERTS[9 * index + 1] = v0.y;
+  OUT_TRIANGLE_VERTS[9 * index + 2] = v0.z;
+  OUT_TRIANGLE_VERTS[9 * index + 3] = v1.x;
+  OUT_TRIANGLE_VERTS[9 * index + 4] = v1.y;
+  OUT_TRIANGLE_VERTS[9 * index + 5] = v1.z;
+  OUT_TRIANGLE_VERTS[9 * index + 6] = v2.x;
+  OUT_TRIANGLE_VERTS[9 * index + 7] = v2.y;
+  OUT_TRIANGLE_VERTS[9 * index + 8] = v2.z;
+}
