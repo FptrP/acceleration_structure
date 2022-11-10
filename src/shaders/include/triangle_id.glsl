@@ -118,6 +118,13 @@ struct Material {
   float alpha_cutoff;
 };
 
-
+uint lowbias32(uint x) {
+  x ^= x >> 16;
+  x *= 0x7feb352dU;
+  x ^= x >> 15;
+  x *= 0x846ca68bU;
+  x ^= x >> 16;
+  return x;
+}
 
 #endif

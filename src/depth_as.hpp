@@ -70,15 +70,24 @@ private:
 struct UniqTriangleIDExtractor {
   UniqTriangleIDExtractor(rendergraph::RenderGraph &graph);
 
-  void run(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target);
+  void run(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target, SceneRenderer &scene, const glm::mat4 &view_projection);
   void process_readback(rendergraph::RenderGraph &graph, ReadBackSystem &readback_sys);
 
   rendergraph::BufferResourceId get_result() const { return reduce_buffer; }
 
 private:
+  uint32_t num_buckets = 128;
+
   rendergraph::BufferResourceId reduce_buffer;
+  rendergraph::BufferResourceId triangles_per_bucket;
+  rendergraph::BufferResourceId buckets;
+
   gpu::ComputePipeline reduce_pipeline;
+  gpu::ComputePipeline bucket_reduce_pipeline;
+  
   VkSampler integer_sampler {nullptr};
+
+  gpu::ComputePipeline fill_buffer_pipeline;
 
   ReadBackID readback_id = INVALID_READBACK;
   uint32_t readback_delay = 0;
@@ -90,7 +99,6 @@ struct TriangleAS {
 
   void close();
   void create(gpu::TransferCmdPool &ctx, uint32_t max_triangles);
-  void update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buffer, const gpu::BufferPtr &indirect_buffer);
   void update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buffer, uint32_t triangles_count);
 
   VkAccelerationStructureKHR get_tlas() const {
@@ -108,7 +116,7 @@ private:
 
 struct TriangleASBuilder {
   TriangleASBuilder(rendergraph::RenderGraph &graph, gpu::TransferCmdPool &ctx);
-  void run(rendergraph::RenderGraph &graph, SceneRenderer &scene, rendergraph::ImageResourceId triangle_id_image, const glm::mat4 &camera);
+  void run(rendergraph::RenderGraph &graph, SceneRenderer &scene, rendergraph::ImageResourceId triangle_id_image, const glm::mat4 &camera, const glm::mat4 &projection);
 
   VkAccelerationStructureKHR get_tlas() const { return triangle_as.get_tlas(); }
 

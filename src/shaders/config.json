@@ -141,6 +141,9 @@
   "image_id_reduce" : {
     "compute" : "unique_uints/reduce_image_comp"
   },
+  "buckets_reduce" : {
+    "compute" : "unique_uints/reduce_buckets_comp"
+  },
   "unique_uints_init" : {
     "compute" : "unique_uints/init_indirect_comp"
   },
@@ -149,5 +152,8 @@
   },
   "create_triangles" : {
     "compute" : "unique_uints/create_triangles_comp"
+  },
+  "fill_triangles" : {
+    "compute" : "unique_uints/fill_triangles_comp"
   }
 }

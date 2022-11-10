@@ -1,0 +1,55 @@
+#version 460
+#include <triangle_id.glsl>
+
+void hash_insert(uint value);
+
+layout (set = 0, binding = 0) readonly buffer TrianglesCountBuffer {
+  uint TRIANGLE_COUNT[];
+};
+
+layout (set = 0, binding = 1) readonly buffer BucketsBuffer {
+  uint IDS[];
+};
+
+layout (set = 0, binding = 2) writeonly buffer ResultBuffer {
+  uint UNIQUE_ID_COUNT;
+  uint UNIQUE_ID[];
+};
+
+const uint INVALID_VAL = ~0u;
+const uint GROUP_SIZE = 1024;
+shared uint HASH_TABLE[GROUP_SIZE];
+
+layout (local_size_x = GROUP_SIZE) in;
+void main() {
+  const uint bucket_index = gl_WorkGroupID.x;
+  const uint ids_count = TRIANGLE_COUNT[bucket_index];
+  const uint thread_id = gl_LocalInvocationID.x;
+
+  HASH_TABLE[thread_id] = INVALID_VAL;
+
+  barrier();
+
+  if (thread_id >= ids_count)
+    return;
+
+  hash_insert(IDS[GROUP_SIZE * bucket_index + thread_id]);
+}
+
+void hash_insert(uint value) {
+  if (value == INVALID_VAL)
+    return;
+
+  uint bucket = lowbias32(value) & (GROUP_SIZE - 1);
+  uint prev = 0;
+
+  do {
+    prev = atomicCompSwap(HASH_TABLE[bucket], INVALID_VAL, value);
+    bucket = (bucket + 1) & (GROUP_SIZE - 1);
+  } while (prev != INVALID_VAL && prev != value);
+
+  if (prev == INVALID_VAL) {
+    uint index = atomicAdd(UNIQUE_ID_COUNT, 1);
+    UNIQUE_ID[index] = value;
+  }
+}

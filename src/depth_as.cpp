@@ -149,7 +149,7 @@ void TLASHolder::update(VkCommandBuffer cmd) {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
     .pNext = nullptr,
     .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
-    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
     .srcAccelerationStructure = tlas,
     .dstAccelerationStructure = tlas,
     .geometryCount = 1,
@@ -452,20 +452,51 @@ void DepthAsBuilder::run(rendergraph::RenderGraph &graph, DepthAs &depth_as, ren
 }
 
 UniqTriangleIDExtractor::UniqTriangleIDExtractor(rendergraph::RenderGraph &graph) {
+
   const uint32_t CANDIDATES_COUNT = (1 << 17);
   constexpr VkBufferUsageFlags hash_flags = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
   reduce_buffer = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, (1 + CANDIDATES_COUNT) * sizeof(uint32_t), hash_flags);
+  
   reduce_pipeline = gpu::create_compute_pipeline("image_id_reduce");
+  bucket_reduce_pipeline = gpu::create_compute_pipeline("buckets_reduce");
 
   auto desc = gpu::DEFAULT_SAMPLER;
   desc.minFilter = VK_FILTER_NEAREST;
   desc.magFilter = VK_FILTER_NEAREST;
   integer_sampler = gpu::create_sampler(desc);
+
+  fill_buffer_pipeline = gpu::create_compute_pipeline("fill_triangles");
+
+  num_buckets = 128;
+  const uint32_t IDS_IN_BUCKET = 1024;
+  triangles_per_bucket = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(uint32_t) * num_buckets, hash_flags);
+  buckets = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(uint32_t) * num_buckets * IDS_IN_BUCKET, hash_flags);
 }
 
-void UniqTriangleIDExtractor::run(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target) {
-  buffer_clear(graph, reduce_buffer, 0);
+void UniqTriangleIDExtractor::run(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target, SceneRenderer &scene, const glm::mat4 &view_projection) {
+  buffer_clear(graph, triangles_per_bucket, 0);
+  buffer_clear(graph, buckets, 0);
+
+  struct Nil {};
+
+  graph.add_task<Nil>("ClearTriangles", 
+  [&](Nil &input, rendergraph::RenderGraphBuilder &builder){
+    builder.use_storage_buffer(reduce_buffer, VK_SHADER_STAGE_COMPUTE_BIT, false);
+  },
+  [=](Nil &input, rendergraph::RenderResources &res, gpu::CmdContext  &ctx) {
+    auto set = res.allocate_set(fill_buffer_pipeline, 0);
+    
+    gpu::write_set(set, 
+      gpu::SSBOBinding {0, res.get_buffer(reduce_buffer)});
+
+    const uint32_t COUNT = 80000;
+
+    ctx.bind_pipeline(fill_buffer_pipeline);
+    ctx.bind_descriptors_compute(0, {set}, {});
+    ctx.push_constants_compute(0, sizeof(COUNT), &COUNT);
+    ctx.dispatch((COUNT + 31)/32, 1, 1);
+  });
 
   struct Data {
     rendergraph::ImageViewId id_image;
@@ -474,20 +505,42 @@ void UniqTriangleIDExtractor::run(rendergraph::RenderGraph &graph, rendergraph::
   graph.add_task<Data>("IdReduce", 
   [&](Data &input, rendergraph::RenderGraphBuilder &builder){
     input.id_image = builder.sample_image(target, VK_SHADER_STAGE_COMPUTE_BIT);
-    builder.use_storage_buffer(reduce_buffer, VK_SHADER_STAGE_COMPUTE_BIT, false);
+    builder.use_storage_buffer(triangles_per_bucket, VK_SHADER_STAGE_COMPUTE_BIT, false);
+    builder.use_storage_buffer(buckets, VK_SHADER_STAGE_COMPUTE_BIT, false);
   },
   [=](Data &input, rendergraph::RenderResources &res, gpu::CmdContext  &ctx) {
     auto desc = res.get_image(input.id_image)->get_extent();
 
     auto set = res.allocate_set(reduce_pipeline, 0);
-    
+
     gpu::write_set(set, 
       gpu::TextureBinding {0, res.get_view(input.id_image), integer_sampler},
-      gpu::SSBOBinding {1, res.get_buffer(reduce_buffer)});
+      gpu::SSBOBinding {1, res.get_buffer(buckets)},
+      gpu::SSBOBinding {2, res.get_buffer(triangles_per_bucket)});
 
     ctx.bind_pipeline(reduce_pipeline);
     ctx.bind_descriptors_compute(0, {set}, {});
+    ctx.push_constants_compute(0, sizeof(num_buckets), &num_buckets);
     ctx.dispatch((desc.width + 31)/32, (desc.height + 31)/32, 1);
+  });
+
+  graph.add_task<Nil>("IdUnique", 
+  [&](Nil &input, rendergraph::RenderGraphBuilder &builder){
+    builder.use_storage_buffer(triangles_per_bucket, VK_SHADER_STAGE_COMPUTE_BIT, true);
+    builder.use_storage_buffer(buckets, VK_SHADER_STAGE_COMPUTE_BIT, true);
+    builder.use_storage_buffer(reduce_buffer, VK_SHADER_STAGE_COMPUTE_BIT, false);
+  },
+  [=](Nil &input, rendergraph::RenderResources &res, gpu::CmdContext  &ctx) {
+    auto set = res.allocate_set(bucket_reduce_pipeline, 0);
+
+    gpu::write_set(set, 
+      gpu::SSBOBinding {0, res.get_buffer(triangles_per_bucket)},
+      gpu::SSBOBinding {1, res.get_buffer(buckets)},
+      gpu::SSBOBinding {2, res.get_buffer(reduce_buffer)});
+
+    ctx.bind_pipeline(bucket_reduce_pipeline);
+    ctx.bind_descriptors_compute(0, {set}, {});
+    ctx.dispatch(num_buckets, 1, 1);
   });
 }
 
@@ -532,22 +585,22 @@ struct Triangle {
 
 gpu::BufferPtr make_triangle_buffer(uint32_t max_triangles_count) {
   Triangle triangle {};
-  //triangle.v0 = glm::vec3{-1.f, -1.f, 0.f};
-  //triangle.v1 = glm::vec3{ 1.f, -1.f, 0.f};
-  //triangle.v2 = glm::vec3{ 0.f,  1.f, 0.f};
+  triangle.v0 = glm::vec3{-1.f, -1.f, 0.f};
+  triangle.v1 = glm::vec3{ 1.f, -1.f, 0.f};
+  triangle.v2 = glm::vec3{ 0.f,  1.f, 0.f};
 
-  triangle.v0 = glm::vec3{ 0.f,  0.f, 0.f};
-  triangle.v1 = glm::vec3{ 0.f,  0.f, 0.f};
-  triangle.v2 = glm::vec3{ 0.f,  0.f, 0.f};
+  //triangle.v0 = glm::vec3{ 0.f,  0.f, 0.f};
+  //triangle.v1 = glm::vec3{ 0.f,  0.f, 0.f};
+  //triangle.v2 = glm::vec3{ 0.f,  0.f, 0.f};
 
   auto storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_CPU_TO_GPU, sizeof(Triangle) * max_triangles_count,
     VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
   
   auto triangles = (Triangle*)storage_buffer->get_mapped_ptr();
   for (uint32_t i = 0; i < max_triangles_count; i++) {
-    //triangle.v0.z = i/5.f;
-    //triangle.v1.z = i/5.f;
-    //triangle.v2.z = i/5.f;
+    triangle.v0.z = i/5.f;
+    triangle.v1.z = i/5.f;
+    triangle.v2.z = i/5.f;
     triangles[i] = triangle;
   }
 
@@ -565,7 +618,7 @@ void TriangleAS::create(gpu::TransferCmdPool &ctx, uint32_t max_triangles_count)
     .pNext = nullptr,
     .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
     .vertexData {.deviceAddress = temp_triangle_buffer->device_address() },
-    .vertexStride = sizeof(Triangle),
+    .vertexStride = sizeof(glm::vec3),
     .maxVertex = 3 * max_triangles - 1,
     .indexType = VK_INDEX_TYPE_NONE_KHR,
     .indexData {.hostAddress = nullptr},
@@ -584,7 +637,7 @@ void TriangleAS::create(gpu::TransferCmdPool &ctx, uint32_t max_triangles_count)
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
     .pNext = nullptr,
     .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR|VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
     .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
     .srcAccelerationStructure = nullptr,
     .dstAccelerationStructure = nullptr,
@@ -607,9 +660,9 @@ void TriangleAS::create(gpu::TransferCmdPool &ctx, uint32_t max_triangles_count)
   blas_storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
   if (out.updateScratchSize)
-    blas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
+    blas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
 
-  auto blas_build_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+  auto blas_build_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -648,51 +701,6 @@ void TriangleAS::create(gpu::TransferCmdPool &ctx, uint32_t max_triangles_count)
   tlas_holder.create(ctx, {blas});
 }
 
-void TriangleAS::update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buffer, const gpu::BufferPtr &indirect_buffer) {
-  VkAccelerationStructureGeometryTrianglesDataKHR triangles_data {
-    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
-    .pNext = nullptr,
-    .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
-    .vertexData {.deviceAddress = triangles_buffer->device_address() },
-    .vertexStride = sizeof(glm::vec3),
-    .maxVertex = 3 * max_triangles - 1,
-    .indexType = VK_INDEX_TYPE_NONE_KHR,
-    .indexData {.hostAddress = nullptr},
-    .transformData {.hostAddress = nullptr} 
-  };
-
-  VkAccelerationStructureGeometryKHR geometry {
-    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-    .pNext = nullptr,
-    .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
-    .geometry = {.triangles = triangles_data },
-    .flags = VK_GEOMETRY_OPAQUE_BIT_KHR
-  };
-
-  VkAccelerationStructureBuildGeometryInfoKHR mesh_info {
-    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
-    .pNext = nullptr,
-    .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
-    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
-    .srcAccelerationStructure = blas,
-    .dstAccelerationStructure = blas,
-    .geometryCount = 1,
-    .pGeometries = &geometry,
-    .ppGeometries = nullptr,
-    .scratchData {.deviceAddress = blas_update_buffer->device_address()}
-  };
-
-  auto range_address = indirect_buffer->device_address();
-  uint32_t stride = sizeof(VkAccelerationStructureBuildRangeInfoKHR);
-  const uint32_t *primitive_ptr = &max_triangles;
-  vkCmdBuildAccelerationStructuresIndirectKHR(cmd, 1, &mesh_info, &range_address, &stride, &primitive_ptr);
-
-  push_wr_barrier(cmd);
-
-  tlas_holder.update(cmd);
-}
-
 void TriangleAS::update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buffer, uint32_t triangles_count) {
   VkAccelerationStructureGeometryTrianglesDataKHR triangles_data {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
@@ -700,7 +708,7 @@ void TriangleAS::update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buf
     .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
     .vertexData {.deviceAddress = triangles_buffer->device_address() },
     .vertexStride = sizeof(glm::vec3),
-    .maxVertex = 3 * max_triangles - 1,
+    .maxVertex = 3 * triangles_count - 1,
     .indexType = VK_INDEX_TYPE_NONE_KHR,
     .indexData {.hostAddress = nullptr},
     .transformData {.hostAddress = nullptr} 
@@ -718,8 +726,8 @@ void TriangleAS::update(VkCommandBuffer cmd, const gpu::BufferPtr &triangles_buf
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
     .pNext = nullptr,
     .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
-    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR|VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
     .srcAccelerationStructure = blas,
     .dstAccelerationStructure = blas,
     .geometryCount = 1,
@@ -760,9 +768,9 @@ TriangleASBuilder::TriangleASBuilder(rendergraph::RenderGraph &graph, gpu::Trans
   as_indirect_args = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(VkAccelerationStructureBuildRangeInfoKHR), indirect_flags);
 }
 
-void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scene, rendergraph::ImageResourceId triangle_id_image, const glm::mat4 &camera) {
+void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scene, rendergraph::ImageResourceId triangle_id_image, const glm::mat4 &camera, const glm::mat4 &projection) {
   buffer_clear(graph, triangle_verts, 0);
-  id_extractor.run(graph, triangle_id_image);
+  id_extractor.run(graph, triangle_id_image, scene, projection * camera);
 
   auto reduce_buffer = id_extractor.get_result();
 

@@ -1,0 +1,35 @@
+#version 460
+
+layout (set = 0, binding = 0, std430) buffer Triangles {
+  uint UNIQ_TRIANGLES_COUNT;
+  float OUT_TRIANGLE_VERTS[];
+};
+
+layout (push_constant) uniform PushConstant {
+  uint TRIANGLES_COUNT;
+};
+
+const float NAN = 0.f/0.f;
+
+layout (local_size_x = 32) in;
+void main() {
+  uint index = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x;
+  if (index == 0) {
+    UNIQ_TRIANGLES_COUNT = 0;
+  }
+  
+  index++;
+
+  if (index >= TRIANGLES_COUNT)
+    return;
+
+  OUT_TRIANGLE_VERTS[9 * index + 0] = NAN;
+  OUT_TRIANGLE_VERTS[9 * index + 1] = 0.f;
+  OUT_TRIANGLE_VERTS[9 * index + 2] = 0.f;
+  OUT_TRIANGLE_VERTS[9 * index + 3] = NAN;
+  OUT_TRIANGLE_VERTS[9 * index + 4] = 0.f;
+  OUT_TRIANGLE_VERTS[9 * index + 5] = 0.f;
+  OUT_TRIANGLE_VERTS[9 * index + 6] = NAN;
+  OUT_TRIANGLE_VERTS[9 * index + 7] = 0.f;
+  OUT_TRIANGLE_VERTS[9 * index + 8] = 0.f;
+}

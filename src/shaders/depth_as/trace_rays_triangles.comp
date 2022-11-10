@@ -35,7 +35,7 @@ void main() {
   vec3 pixel_normal = normalize(vec3(normal_mat * vec4(pixel_normal_world, 0)));
   
   vec3 R = normalize(reflect(view_vec, pixel_normal));
-  vec3 pad = 0.05 * normalize(view_vec);
+  vec3 pad = 0.01 * normalize(view_vec);
 
   vec3 screen_space_start = project_view_vec(view_vec - pad, fovy, aspect, znear, zfar);
   vec3 screen_space_dir = project_view_vec(view_vec - pad + R, fovy, aspect, znear, zfar);
@@ -43,16 +43,26 @@ void main() {
   screen_space_dir *= (1-screen_space_start.z)/abs(screen_space_dir.z);
   
   rayQueryEXT ray_query;
-	rayQueryInitializeEXT(ray_query, TRIANGLE_AS, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, view_vec - pad, 0.005, R, 10.0);
-
-  vec2 hit_uv;
-  bool valid_hit = false;
+	rayQueryInitializeEXT(ray_query, TRIANGLE_AS, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, view_vec + 1e-6 * pixel_normal, 0.005, R, 20.0);
 
   while (rayQueryProceedEXT(ray_query)) {}
 
-  vec3 color = vec3(1, 1, 1);
+  vec3 color = vec3(0, 0, 0);
   if(rayQueryGetIntersectionTypeEXT(ray_query, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
-    color *= 0.1;
+    float t_camera = rayQueryGetIntersectionTEXT(ray_query, true);
+    vec3 hit_camera = view_vec + t_camera * R;
+    vec3 hit = project_view_vec(hit_camera, fovy, aspect, znear, zfar);
+    hit.z = texture(DEPTH, hit.xy).x;
+    
+    float t = dot(hit.xy - screen_space_start.xy, screen_space_dir.xy)/dot(screen_space_dir.xy, screen_space_dir.xy);
+    
+    vec3 t_hit = screen_space_start + screen_space_dir * t;
+
+    vec2 pixel_dist = vec2(tex_size) * abs(t_hit.xy - hit.xy);
+
+    if (max(pixel_dist.x, pixel_dist.y) < 1 && abs(t_hit.z - hit.z) < 0.001) {
+      color = texture(ALBEDO, hit.xy).rgb;
+    }
   }
 
   vec4 hit_color = vec4(color, 1.0);
