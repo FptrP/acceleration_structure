@@ -122,7 +122,6 @@ void clear_depth(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId i
 
 void clear_color(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId image, VkClearColorValue val) {
   struct Data {};
-
   auto info = graph.get_descriptor(image);
 
   graph.add_task<Data>("Clear_color",

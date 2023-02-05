@@ -155,5 +155,14 @@
   },
   "fill_triangles" : {
     "compute" : "unique_uints/fill_triangles_comp"
+  },
+  "tree_init" : {
+    "compute" : "tree_compressor/init_comp"
+  },
+  "tree_process" : {
+    "compute" : "tree_compressor/process_level_comp"
+  },
+  "tree_clear" : {
+    "compute" : "tree_compressor/clear_aabb_comp"
   }
 }

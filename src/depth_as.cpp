@@ -91,7 +91,7 @@ void TLASHolder::create(gpu::TransferCmdPool &cmd_pool, const std::vector<VkAcce
   tlas_storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
   
   if (out.updateScratchSize)
-    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -834,4 +834,149 @@ void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scen
     push_wr_barrier(cmd.get_command_buffer());
   });
 
+}
+
+GbufferCompressor::GbufferCompressor(rendergraph::RenderGraph &graph, gpu::TransferCmdPool &transfer_pool, uint32_t width, uint32_t height)
+{
+  num_elems = width * height;
+
+  uint32_t mip_levels = std::floor(std::log2(std::max(width, height))) + 1u;
+
+  gpu::ImageInfo info {VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, width, height, 1, mip_levels, 1};
+  tree_levels = graph.create_image(VK_IMAGE_TYPE_2D, info, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+  clear_pass = gpu::create_compute_pipeline("tree_clear");
+  first_pass = gpu::create_compute_pipeline("tree_init");
+  compress_mips = gpu::create_compute_pipeline("tree_process");
+  
+  VkBufferUsageFlags as_flags = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                              | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                              | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+
+  counter = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(uint32_t) * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  aabbs = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(VkAabbPositionsKHR) * num_elems, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|as_flags);
+  compressed_planes = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(CompressedPlane) * num_elems, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+
+  sampler = gpu::create_sampler(gpu::DEFAULT_SAMPLER);
+
+  depth_as.create(transfer_pool, width, height);
+}
+
+void GbufferCompressor::build_tree(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId depth, uint32_t depth_mip, rendergraph::ImageResourceId normal, const DrawTAAParams &params)
+{
+  struct Nil {};
+  graph.add_task<Nil>("ClearAABB", 
+  [&](Nil &, rendergraph::RenderGraphBuilder &builder){
+    builder.use_storage_buffer(aabbs, VK_SHADER_STAGE_COMPUTE_BIT, false);
+  },
+  [=](Nil &, rendergraph::RenderResources &res, gpu::CmdContext &cmd){
+    auto set = res.allocate_set(clear_pass, 0);
+    gpu::write_set(set, gpu::SSBOBinding {0, res.get_buffer(aabbs)});
+
+    cmd.bind_pipeline(clear_pass);
+    cmd.bind_descriptors_compute(0, {set});
+    cmd.push_constants_compute(0, sizeof(num_elems), &num_elems);
+    cmd.dispatch((num_elems + 31u)/32u, 1, 1);
+  });
+
+  clear_color(graph, tree_levels, VkClearColorValue {.float32 {0.f, 0.f, -1.f, 0}});
+  buffer_clear(graph, counter, 0u);
+
+  glm::mat4 normal_mat = glm::transpose(glm::inverse(params.camera));
+
+  struct InitStruct {
+    rendergraph::ImageViewId depth, normal, first_level;
+  };
+  
+  graph.add_task<InitStruct>("InitTreeBuilding", 
+  [&](InitStruct &input, rendergraph::RenderGraphBuilder &builder){
+    input.normal = builder.sample_image(normal, VK_SHADER_STAGE_COMPUTE_BIT);
+    input.depth = builder.sample_image(depth, VK_SHADER_STAGE_COMPUTE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, depth_mip, 1, 0, 1);
+    input.first_level = builder.use_storage_image(tree_levels, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
+  },
+  [=](InitStruct &input, rendergraph::RenderResources &res, gpu::CmdContext &cmd){
+    auto set = res.allocate_set(first_pass, 0);
+    gpu::write_set(set, 
+      gpu::TextureBinding {0, res.get_view(input.depth), sampler},
+      gpu::TextureBinding {1, res.get_view(input.normal), sampler},
+      gpu::StorageTextureBinding {2, res.get_view(input.first_level)});
+    
+    auto extent = res.get_image(input.first_level)->get_extent();
+    cmd.bind_pipeline(first_pass);
+    cmd.bind_descriptors_compute(0, {set});
+    cmd.push_constants_compute(0, sizeof(normal_mat), &normal_mat);
+    cmd.dispatch((extent.width + 7)/8, (extent.height + 3)/4, 1);
+  });
+
+  uint32_t mips_count = graph.get_descriptor(tree_levels).mip_levels;
+  if (mips_count < 2)
+    throw std::runtime_error {"2 mips or more required"};
+  
+  uint32_t last_src_mip = std::min(5u, mips_count - 2); 
+  for (uint32_t i = 0; i <= last_src_mip; i++) {
+    process_level(graph, params, i, (i == 0)? CHECK_GAPS : (i == last_src_mip)? DO_NOT_UPDATE : 0u);
+  }
+
+  graph.add_task<Nil>("BuildAABB_AS", 
+  [&](Nil &, rendergraph::RenderGraphBuilder &builder){
+    builder.use_storage_buffer(aabbs, VK_SHADER_STAGE_COMPUTE_BIT, true);
+  },
+  [=](Nil &, rendergraph::RenderResources &res, gpu::CmdContext &cmd){
+    push_rw_barrier(cmd.get_command_buffer());
+    depth_as.update(cmd.get_command_buffer(), num_elems, res.get_buffer(aabbs));
+    push_wr_barrier(cmd.get_command_buffer());
+  });
+  
+}
+
+void GbufferCompressor::process_level(rendergraph::RenderGraph &graph, const DrawTAAParams &params, uint32_t src_level, uint32_t flag) {
+  struct Input {
+    rendergraph::ImageViewId src;
+    rendergraph::ImageViewId dst;
+  };
+
+  struct PushConstants {
+    float aspect;
+    float fovy;
+    float znear;
+    float zfar;
+    uint32_t flag;
+    uint32_t src_level;
+  };
+
+  PushConstants push_consts {params.fovy_aspect_znear_zfar.y,
+                             params.fovy_aspect_znear_zfar.x,
+                             params.fovy_aspect_znear_zfar.z,
+                             params.fovy_aspect_znear_zfar.w,
+                             flag, src_level};
+
+  graph.add_task<Input>("ProcessLevel",
+  [&](Input &input, rendergraph::RenderGraphBuilder &builder){
+    input.src = builder.use_storage_image(tree_levels, VK_SHADER_STAGE_COMPUTE_BIT, src_level, 0);
+    input.dst = builder.use_storage_image(tree_levels, VK_SHADER_STAGE_COMPUTE_BIT, src_level + 1, 0);
+    
+    builder.use_storage_buffer(counter, VK_SHADER_STAGE_COMPUTE_BIT, false);
+    builder.use_storage_buffer(aabbs, VK_SHADER_STAGE_COMPUTE_BIT, false);
+    builder.use_storage_buffer(compressed_planes, VK_SHADER_STAGE_COMPUTE_BIT, false);
+  },
+  [=](Input &input, rendergraph::RenderResources &res, gpu::CmdContext &cmd){
+    auto set = res.allocate_set(compress_mips, 0);
+    gpu::write_set(set, 
+      gpu::StorageTextureBinding {0, res.get_view(input.src)},
+      gpu::StorageTextureBinding {1, res.get_view(input.dst)},
+      gpu::SSBOBinding {2, res.get_buffer(counter)},
+      gpu::SSBOBinding {3, res.get_buffer(aabbs)},
+      gpu::SSBOBinding {4, res.get_buffer(compressed_planes)});
+    
+    auto extent = res.get_image(input.src)->get_extent();
+    for (uint32_t i = 0; i < src_level + 1; i++) {
+      extent.width = std::max((extent.width + 1u)/2u, 1u);
+      extent.height = std::max((extent.height + 1u)/2u, 1u);
+    }
+
+    cmd.bind_pipeline(compress_mips);
+    cmd.bind_descriptors_compute(0, {set});
+    cmd.push_constants_compute(0, sizeof(push_consts), &push_consts);
+    cmd.dispatch((extent.width + 7)/8, (extent.height + 3)/4, 1);
+  });
 }

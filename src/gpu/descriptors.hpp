@@ -423,6 +423,26 @@ namespace gpu {
     void init_base(const BasePipeline &pipeline);
   };
   
+
+  struct TextureBindingSlot
+  {
+
+  };
+
+  struct BufferBindingSlot
+  {
+
+  };
+
+  /*VkDescriptorSet create_set(const BasePipeline &pipeline, uint32_t set_id)
+  {
+    auto desc_info = pipeline.get_descriptor_info(set_id);
+    if (desc_info.has_bindless_resources())
+      throw std::runtime_error {"Bindless resources initialization is not supported"};
+  
+    
+  }*/
+
 }
 
 #endif

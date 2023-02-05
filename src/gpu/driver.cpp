@@ -188,6 +188,9 @@ namespace gpu {
     VkPhysicalDeviceFeatures features {};
     features.fragmentStoresAndAtomics = VK_TRUE;
     features.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
+    features.tessellationShader = VK_TRUE;
+    features.geometryShader = VK_TRUE;
+    
     VkPhysicalDeviceDescriptorIndexingFeatures bindless_features {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES,
       .pNext = nullptr

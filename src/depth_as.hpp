@@ -134,4 +134,43 @@ private:
   rendergraph::BufferResourceId as_indirect_args;
 };
 
+struct GbufferCompressor {
+  GbufferCompressor(rendergraph::RenderGraph &graph, gpu::TransferCmdPool &transfer_pool, uint32_t width, uint32_t height);
+
+  void build_tree(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId depth, uint32_t depth_mip, rendergraph::ImageResourceId normal, const DrawTAAParams &params);
+  
+  VkAccelerationStructureKHR get_tlas() const { return depth_as.get_tlas(); } 
+
+private:
+  gpu::ComputePipeline clear_pass;
+  gpu::ComputePipeline first_pass;
+  gpu::ComputePipeline compress_mips;
+
+  rendergraph::ImageResourceId tree_levels;
+  rendergraph::BufferResourceId nodes;
+  VkSampler sampler;
+
+  rendergraph::BufferResourceId counter;
+  rendergraph::BufferResourceId aabbs;
+  rendergraph::BufferResourceId compressed_planes;
+
+  uint32_t num_elems = 0;
+  
+  DepthAs depth_as;
+
+  struct CompressedPlane {
+    uint32_t packed_normal;
+    uint32_t pos_x;
+    uint32_t pos_y;
+    uint32_t size_depth;
+  };
+
+  enum {
+    CHECK_GAPS = 1,
+    DO_NOT_UPDATE = 2
+  };
+  
+  void process_level(rendergraph::RenderGraph &graph, const DrawTAAParams &params, uint32_t src_level, uint32_t flag);
+};
+
 #endif

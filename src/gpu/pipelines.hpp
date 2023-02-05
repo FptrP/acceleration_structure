@@ -176,6 +176,8 @@ namespace gpu {
     void set_program(const std::string &name);
     
     VkDescriptorSetLayout get_layout(uint32_t index) const;
+    const DescriptorSetLayoutInfo &get_descriptor_info(uint32_t index) const;
+    
     VkPipelineLayout get_pipeline_layout() const;
     
     bool is_attached() const { return pool != nullptr; }
@@ -312,6 +314,7 @@ namespace gpu {
     VkPipeline get_pipeline(const ComputePipeline &pipeline);
     VkPipeline get_pipeline(const GraphicsPipeline &pipeline);
     VkRenderPass get_renderpass(const GraphicsPipeline &pipeline);
+    
 
     friend BasePipeline;
     friend ComputePipeline;

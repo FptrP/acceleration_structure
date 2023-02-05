@@ -185,6 +185,13 @@ namespace gpu {
     return pool->shader_programs.get_program_descriptor_layout(program_id.value(), index);
   }
   
+  const DescriptorSetLayoutInfo &BasePipeline::get_descriptor_info(uint32_t index) const {
+    if (!program_id.has_value()) {
+      throw std::runtime_error {"Pipeline not attached to program"};
+    }
+    return pool->shader_programs.get_program_descriptor_info(program_id.value(), index);
+  }
+
   VkPipelineLayout BasePipeline::get_pipeline_layout() const {
     if (!program_id.has_value()) {
       throw std::runtime_error {"Pipeline not attached to program"};

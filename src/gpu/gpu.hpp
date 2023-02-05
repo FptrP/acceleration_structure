@@ -49,6 +49,8 @@ namespace gpu {
   ManagedDescriptorSet allocate_descriptor_set(VkDescriptorSetLayout layout, const std::initializer_list<uint32_t> &variable_sizes);
 
   void collect_resources();
+
+  
 }
 
 #endif

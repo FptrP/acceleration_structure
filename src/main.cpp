@@ -268,14 +268,8 @@ int main(int argc, char **argv) {
   SceneRenderer scene_renderer {scene};
   scene_renderer.init_pipeline(render_graph, gbuffer);
   DeferedShadingPass shading_pass {render_graph, app_init.window};  
-  
+  GbufferCompressor tree_builder {render_graph, transfer_pool, WIDTH/2, HEIGHT/2};
   TriangleASBuilder triangle_as_builder {render_graph, transfer_pool};
-
-  //DepthAs screen_space_as;
-  //DepthAsBuilder screen_space_as_builder;
-
-  //screen_space_as.create(transfer_pool, WIDTH/2, HEIGHT/2);
-  //screen_space_as_builder.init(WIDTH/2, HEIGHT/2);
 
   imgui_create_fonts(transfer_pool);
 
@@ -346,18 +340,13 @@ int main(int argc, char **argv) {
 
     SamplesMarker::clear(render_graph);
 
-    //scene_renderer.draw_taa(render_graph, gbuffer, draw_params);
     scene_renderer.rasterize_triange_id(render_graph, gbuffer, draw_params);
     scene_renderer.reconstruct_gbuffer(render_graph, gbuffer, draw_params);
 
     triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera, projection);
 
-    //id_extractor.run(render_graph, gbuffer.triangle_id);
-    //id_extractor.process_readback(render_graph, readback_system);
-
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
-
-    //screen_space_as_builder.run(render_graph, screen_space_as, gbuffer.depth, 1, draw_params);
+    tree_builder.build_tree(render_graph, gbuffer.depth, 1, gbuffer.downsampled_normals, draw_params);
 
     ImGui::Begin("Read texture");
     bool depth = ImGui::Button("Depth") && (image_read_back == INVALID_READBACK);
@@ -386,7 +375,6 @@ int main(int argc, char **argv) {
     
     ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw);
     
-    
 #if USE_RAY_QUERY
     if (use_rt_ao) {
       gtao.add_main_rt_pass(render_graph, gtao_rt_params, acceleration_struct.tlas, gbuffer.depth, gbuffer.normal);
@@ -409,8 +397,8 @@ int main(int argc, char **argv) {
     
     rt_reflections.run(render_graph, gbuffer, triangle_as_builder.get_tlas(), assr_params);
 
-    //add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
-    add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
+    add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
+    //add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
 
     add_present_subpass(render_graph);
     render_graph.submit();

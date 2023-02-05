@@ -33,6 +33,8 @@ struct DrawTAAParams {
   glm::vec4 fovy_aspect_znear_zfar;
 };
 
+constexpr uint32_t MAX_DRAWCALLS = 2048u; 
+
 struct SceneRenderer {
   SceneRenderer(scene::CompiledScene &s) : target {s} {}
 
@@ -68,6 +70,7 @@ private:
   VkSampler integer_sampler;
 
   rendergraph::BufferResourceId transform_buffer;
+  rendergraph::BufferResourceId drawcall_buffer;
 };
 
 

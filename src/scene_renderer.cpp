@@ -76,7 +76,7 @@ void SceneRenderer::init_pipeline(rendergraph::RenderGraph &graph, const Gbuffer
   triangle_id_pipeline = gpu::create_graphics_pipeline();
   triangle_id_pipeline.set_program("gbuf_triangle_id");
   triangle_id_pipeline.set_registers(regs);
-  triangle_id_pipeline.set_vertex_input({});
+  triangle_id_pipeline.set_vertex_input(scene::get_vertex_input_shadow());
   triangle_id_pipeline.set_rendersubpass({true, {
     VK_FORMAT_R32_UINT,
     VK_FORMAT_D24_UNORM_S8_UINT
@@ -95,6 +95,7 @@ void SceneRenderer::init_pipeline(rendergraph::RenderGraph &graph, const Gbuffer
   integer_sampler = gpu::create_sampler(sampler_info);
   
   transform_buffer = graph.create_buffer(VMA_MEMORY_USAGE_CPU_TO_GPU, sizeof(glm::mat4) * 1000, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+  drawcall_buffer = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(DrawCall) * MAX_DRAWCALLS, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
 
   scene_textures.reserve(target.textures.size());
   for (auto tex_desc : target.textures) {
@@ -147,6 +148,7 @@ void SceneRenderer::update_scene() {
   }
 
   gpu_transfer::write_buffer(transform_buffer, 0, sizeof(glm::mat4) * transforms.size(), transforms.data());
+  gpu_transfer::write_buffer(drawcall_buffer, 0, sizeof(DrawCall) * draw_calls.size(), draw_calls.data());
 }
 
 struct PushData {
@@ -280,11 +282,11 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
 
       gpu::write_set(set, 
         gpu::SSBOBinding {0, resources.get_buffer(transform_buffer)},
-        gpu::SSBOBinding {1, target.vertex_buffer},
-        gpu::SSBOBinding {2, target.index_buffer},
-        gpu::UBOBinding {3, cmd.get_ubo_pool(), blk});
+        gpu::UBOBinding {1, cmd.get_ubo_pool(), blk});
 
       cmd.bind_descriptors_graphics(0, {set}, {blk.offset});
+      cmd.bind_vertex_buffers(0, {target.vertex_buffer->api_buffer()}, {0ul});
+      cmd.bind_index_buffer(target.index_buffer->api_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
       for (const auto &draw_call : draw_calls) {
         const auto &prim = target.primitives[draw_call.primitive];
@@ -296,8 +298,7 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
         pc.vertex_offset = prim.vertex_offset;
         
         cmd.push_constants_graphics(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData), &pc);
-        cmd.draw(prim.index_count, 1, 0, 0);
-        //cmd.draw_indexed(prim.index_count, 1, prim.index_offset, prim.vertex_offset, 0);
+        cmd.draw_indexed(prim.index_count, 1, prim.index_offset, prim.vertex_offset, 0);
       }
 
       cmd.end_renderpass();

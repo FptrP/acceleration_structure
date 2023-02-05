@@ -1,0 +1,245 @@
+#version 460
+#include <gbuffer_encode.glsl>
+#include <compressed_plane.glsl>
+
+layout (set = 0, binding = 0, rgba32f) uniform image2D INPUT_TEX;
+layout (set = 0, binding = 1, rgba32f) uniform image2D OUT_TEX;
+
+layout (set = 0, binding = 2, std430) buffer COUNTER {
+  uvec4 g_counter;
+};
+
+
+layout (set = 0, binding = 3, std430) buffer AABBS {
+  VkAABB g_aabb[];
+};
+
+layout (set = 0, binding = 4, std430) buffer CompressedPlanes {
+  CompressedPlane g_compressed_planes[];
+};
+
+layout (push_constant) uniform PushConstants {
+  float aspect;
+  float fovy;
+  float znear;
+  float zfar;
+  uint flag;
+  uint src_level;
+};
+
+const uint CHECK_GAPS = 1;
+const uint DO_NOT_COMPRESS = 2;
+//true if gap
+bool check_gaps(in vec3 positions[4], in vec3 normals[4]);
+
+//true if all child nodes are valid
+bool load_nodes(ivec2 top_left, ivec2 src_tex_size, out vec3 normals[4], out vec3 positions[4], out bool valid_nodes[4]);
+
+//true if compressed plane is close enougth to child nodes
+bool compress_nodes(ivec2 top_left, ivec2 src_tex_size, in vec3 normals[4], in vec3 positions[4], out vec3 out_normal, out vec3 out_pos);
+
+void push_aabbs(ivec2 top_left, ivec2 src_tex_size, in vec3 normals[4], in vec3 positions[4], in bool valid_nodes[4]);
+
+CompressedPlane pack_plane(vec3 pos, vec3 norm);
+
+vec3 plane_intersection(vec3 v, vec3 plane_normal, vec3 plane_point);
+vec3 plane_intersection(vec2 uv, vec3 plane_normal, vec3 plane_point);
+VkAABB create_aabb(vec3 pos, vec3 normal, vec2 corner_uv, vec2 step_uv);
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = ivec2(imageSize(OUT_TEX).xy);
+  ivec2 src_size = ivec2(imageSize(INPUT_TEX).xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  
+  if (any(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+
+  bool compress = (flag != DO_NOT_COMPRESS);
+  
+  vec3 normals[4];
+  vec3 positions[4];
+  bool valid_child_nodes[4];
+
+  bool all_nodes_valid = load_nodes(2 * pixel_pos, src_size, normals, positions, valid_child_nodes);
+  compress = compress && all_nodes_valid;
+
+  if (compress && flag == CHECK_GAPS) { //check gap
+    compress = compress && !check_gaps(positions, normals); //no gaps
+  }
+
+  vec3 node_normal = vec3(0, 0, 0); 
+  vec3 node_pos = vec3(0, 0, 0);
+
+  if (compress) {
+    compress = compress && compress_nodes(2 * pixel_pos, src_size, normals, positions, node_normal, node_pos);
+  }
+
+  if (!compress) {
+    push_aabbs(2 * pixel_pos, src_size, normals, positions, valid_child_nodes);
+    return;
+  }
+
+  vec2 oct_normal = encode_normal(node_normal);
+  uint packed_normal = packHalf2x16(encode_normal(node_normal));
+  uint packed_depth = uint(encode_depth(node_pos.z, znear, zfar) * ((1 << 24) - 1));
+  imageStore(OUT_TEX, pixel_pos, vec4(oct_normal, encode_depth(node_pos.z, znear, zfar), 0.f));
+}
+
+vec3 plane_intersection(vec3 v, vec3 plane_normal, vec3 plane_point) {
+  float dot_val = dot(v, plane_normal);
+  const float t = dot(plane_point, plane_normal)/dot_val; 
+  return (abs(dot_val) > 0.01)? v * t : vec3(0, 0, 0);
+}
+
+vec3 plane_intersection(vec2 uv, vec3 plane_normal, vec3 plane_point) {
+  vec3 v = normalize(reconstruct_view_vec(uv, 0, fovy, aspect, znear, zfar));
+  return plane_intersection(v, plane_normal, plane_point);
+}
+
+VkAABB create_aabb(vec3 pos, vec3 normal, vec2 corner_uv, vec2 step_uv) {
+  float min_depth = 1.f;
+  float max_depth = 0.f;
+
+  for (int i = 0; i < 4; i++) {
+    vec2 pos_uv = corner_uv + (i >> 1) * vec2(0, step_uv.y) + (i & 1) * vec2(step_uv.x, 0);
+    vec3 v = plane_intersection(pos_uv, normal, pos);
+    float depth = encode_depth(v.z, znear, zfar);
+    min_depth = min(min_depth, depth);
+    max_depth = max(max_depth, depth);
+  }
+  vec3 v0 = reconstruct_view_vec(corner_uv, min_depth, fovy, aspect, znear, zfar);
+  vec3 v1 = reconstruct_view_vec(corner_uv + step_uv, min_depth, fovy, aspect, znear, zfar);
+  v1.z = linearize_depth2(max_depth, znear, zfar);
+
+  vec3 min_vec = min(v0, v1);
+  vec3 max_vec = max(v0, v1);
+  return VkAABB(min_vec.x, min_vec.y, min_vec.z, max_vec.x, max_vec.y, max_vec.z);
+}
+
+bool check_gaps(in vec3 positions[4], in vec3 normals[4]) {
+  float min_dot = 1.f;
+  for (uint i = 0; i < 2; i++) {
+    for (uint j = 0; j < 2; j++) {
+      vec3 pos = positions[i * 2 + j];
+      vec3 dy = positions[((i + 1) & 1) * 2 + j] - pos; 
+      vec3 dx = positions[i * 2 + ((j + 1) & 1)] - pos;
+      bool swp = i == j;
+      vec3 reconstructed_normal = normalize(cross(swp? dx : dy, swp? dy : dx));
+      min_dot = min(dot(reconstructed_normal, normals[i * 2 +j]), min_dot);
+    }
+  }
+  return min_dot < 0.5f;
+}
+
+//true if all child nodes are valid
+bool load_nodes(ivec2 top_left, ivec2 src_tex_size, out vec3 normals[4], out vec3 positions[4], out bool valid_nodes[4]) {
+  bool all_nodes_valid = true;
+
+  for (uint i = 0; i < 2; i++) {
+   for (uint j = 0; j < 2; j++) {
+      uint offset = i * 2 + j;
+      ivec2 sample_pos = top_left + ivec2(j, i);
+      vec2 sample_uv = (sample_pos + vec2(0.5, 0.5))/src_tex_size;
+
+      vec4 encoded = vec4(0.f, 0.f, -1.f, 0.f);
+      if (all(lessThan(sample_pos, src_tex_size))) {
+        encoded = imageLoad(INPUT_TEX, sample_pos);
+      }
+
+      valid_nodes[offset] = (encoded.z >= 0.f);
+      all_nodes_valid = all_nodes_valid && valid_nodes[offset];
+      normals[offset] = valid_nodes[offset]? decode_normal(encoded.xy) : vec3(0, 0, 0);
+      positions[offset] = valid_nodes[offset]? reconstruct_view_vec(sample_uv, encoded.z, fovy, aspect, znear, zfar) : vec3(0, 0, 0);
+    }
+  }
+
+  return all_nodes_valid;
+}
+
+//true if compressed plane is close enougth to child nodes
+bool compress_nodes(ivec2 top_left, ivec2 src_tex_size, in vec3 normals[4], in vec3 positions[4], out vec3 out_normal, out vec3 out_pos) {
+  const vec3 node_normal = normalize(0.25 * (normals[0] + normals[1] + normals[2] + normals[3])); 
+  
+  const vec2 uv_step = 1.f/src_tex_size;
+  const vec2 top_left_uv = vec2(top_left) * uv_step;
+  
+  ivec2 dst_tex_size = (src_tex_size + ivec2(1, 1))/2;
+  const vec2 center_uv = (0.5 * top_left + vec2(0.5, 0.5))/dst_tex_size;
+  
+  const vec3 node_view_vec = normalize(reconstruct_view_vec(center_uv, 0.f, fovy, aspect, znear, zfar));
+  
+  //minimization
+  float dot_sum = 0.f;
+
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 2; j++) {
+      vec3 pos = positions[i * 2 + j];
+      vec3 norm = normals[i * 2 + j];
+      vec2 corner_uv = top_left_uv + i * vec2(0.f, uv_step.y) + j * vec2(uv_step.x, 0.f); 
+
+      dot_sum += dot(node_normal, plane_intersection(corner_uv, norm, pos));
+      dot_sum += dot(node_normal, plane_intersection(corner_uv + vec2(uv_step.x, 0), norm, pos));
+      dot_sum += dot(node_normal, plane_intersection(corner_uv + vec2(0, uv_step.y), norm, pos));
+      dot_sum += dot(node_normal, plane_intersection(corner_uv + uv_step, norm, pos));
+    }
+  }
+
+  float t = dot_sum/(16.f * dot(node_view_vec, node_normal));
+  vec3 node_pos = t * node_view_vec;
+  
+  float max_norm_angle = -1.f;
+  float max_plane_dist = 0.f;
+  for (int i = 0; i < 4; i++) {
+    max_norm_angle = max(max_norm_angle, 1 - dot(node_normal, normals[i]));
+    max_plane_dist = max(max_plane_dist, abs(dot(positions[i] - node_pos, node_normal)));
+  }
+
+  out_normal = node_normal;
+  out_pos = node_pos;
+  return (max_plane_dist < 0.05 && max_norm_angle < 0.05);
+}
+
+void push_aabbs(ivec2 top_left, ivec2 src_tex_size, in vec3 normals[4], in vec3 positions[4], in bool valid_nodes[4]) {
+  if (src_level < 2)
+    return;
+  vec2 step_uv = 1.f/src_tex_size;
+  vec2 top_left_uv = top_left * step_uv; 
+
+  uint valid_nodes_count = 0;
+  for (uint i = 0; i < 4; i++)
+    valid_nodes_count += valid_nodes[i]? 1u : 0u;
+
+  uint write_index = atomicAdd(g_counter.x, valid_nodes_count);
+  
+  for (uint i = 0; i < 2; i++) {
+    for (uint j = 0; j < 2; j++) {
+      uint offset = i * 2 + j;
+      if (!valid_nodes[offset])
+        continue;
+
+      vec3 norm = normals[offset];
+      vec3 pos = positions[offset];
+
+      vec2 corner_uv = top_left_uv + i * vec2(0.f, step_uv.y) + j * vec2(step_uv.x, 0.f);
+      vec2 center_uv = corner_uv + 0.5 * step_uv;
+      
+      g_compressed_planes[write_index] = pack_plane(pos, norm);
+
+      g_aabb[write_index] = create_aabb(pos, norm, corner_uv, step_uv);
+      write_index++;
+    }
+  }
+}
+
+CompressedPlane pack_plane(vec3 pos, vec3 norm) {
+  uint uint_depth = uint(encode_depth(pos.z, znear, zfar) * ((1 << 24) - 1)); 
+ 
+  CompressedPlane result;
+  result.packed_normal = packUnorm2x16(encode_normal(norm));
+  result.pos_x = floatBitsToInt(pos.x);
+  result.pos_y = floatBitsToInt(pos.y);
+  result.size_depth = ((src_level & 0xff) << 24) | (uint_depth & 0x00ffffff);
+  return result;
+}

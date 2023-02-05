@@ -1,0 +1,32 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL_TEX;
+layout (set = 0, binding = 2, rgba32f) uniform image2D OUT_TEX;
+
+layout (push_constant) uniform PushConstants {
+  mat4 g_normal_mat;
+};
+
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = ivec2(imageSize(OUT_TEX).xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  
+  if (all(greaterThanEqual(pixel_pos, tex_size))) {
+    return;
+  }
+  vec2 uv = (pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  vec3 normal = sample_gbuffer_normal(NORMAL_TEX, uv);
+  float depth = texture(DEPTH_TEX, uv).x;
+
+  normal = normalize((g_normal_mat * vec4(normal, 0)).xyz);
+  vec2 encoded_normal = encode_normal(normal);
+
+  //uint packed_depth = uint(depth * ((1 << 24) - 1));
+  //uint packed_normal = packHalf2x16(encoded_normal);
+  imageStore(OUT_TEX, pixel_pos, vec4(encoded_normal, depth, 0));
+}

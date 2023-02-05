@@ -25,6 +25,12 @@ uint pack_triangle_id(uint transform_index, uint primitive_index, uint triangle_
   return res;
 }
 
+uint set_triangle_id(uint packed_id, uint triangle_index) {
+  packed_id = packed_id ^ (packed_id & TRIANGLE_MASK);
+  packed_id |= triangle_index & TRIANGLE_MASK;
+  return packed_id;
+}
+
 uint pack_triangle_id(TriangleID tid) {
   return pack_triangle_id(tid.transform_index, tid.primitive_index, tid.triangle_index);
 }

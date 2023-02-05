@@ -1,0 +1,20 @@
+#version 460 core
+#include <compressed_plane.glsl>
+
+layout (set = 0, binding = 0, std430) writeonly buffer AABBBuf {
+  VkAABB g_aabbs[];
+};
+
+layout (push_constant) uniform PushConsts {
+  uint ELEMS_COUNT;
+};
+
+const float NAN = 0.f/0.f;
+
+layout (local_size_x = 32) in;
+void main() {
+  uint index = gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x;
+  VkAABB aabb = VkAABB(0, 0.f, 0.f, 0, 0.f, 0.f);
+  if (index < ELEMS_COUNT)
+    g_aabbs[index] = aabb;
+}
