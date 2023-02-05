@@ -54,6 +54,8 @@ struct SceneRenderer {
   const std::vector<DrawCall> &get_drawcalls() const { return draw_calls; }
   
   rendergraph::BufferResourceId get_scene_transforms() const { return transform_buffer; }
+  rendergraph::BufferResourceId get_drawcalls_buffer() const { return drawcall_buffer; }
+  
   const scene::CompiledScene &get_target() const { return target; }
 
 private:

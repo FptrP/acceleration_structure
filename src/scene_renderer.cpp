@@ -245,9 +245,7 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
   
   struct PushData {
     uint32_t transform_index;
-    uint32_t primitive_index;
-    uint32_t index_offset;
-    uint32_t vertex_offset;
+    uint32_t drawcall_index;
   };
 
   struct GbufConst {
@@ -288,17 +286,18 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
       cmd.bind_vertex_buffers(0, {target.vertex_buffer->api_buffer()}, {0ul});
       cmd.bind_index_buffer(target.index_buffer->api_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
+      uint32_t drawcall_id = 0;
+
       for (const auto &draw_call : draw_calls) {
         const auto &prim = target.primitives[draw_call.primitive];
 
         PushData pc {};
         pc.transform_index = draw_call.transform;
-        pc.primitive_index = draw_call.primitive;
-        pc.index_offset = prim.index_offset;
-        pc.vertex_offset = prim.vertex_offset;
+        pc.drawcall_index = drawcall_id;
         
         cmd.push_constants_graphics(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData), &pc);
         cmd.draw_indexed(prim.index_count, 1, prim.index_offset, prim.vertex_offset, 0);
+        drawcall_id++;
       }
 
       cmd.end_renderpass();
@@ -339,6 +338,7 @@ void SceneRenderer::reconstruct_gbuffer(rendergraph::RenderGraph &graph, const G
       input.velocity = builder.use_storage_image(gbuffer.velocity_vectors, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
 
       builder.use_storage_buffer(transform_buffer, VK_SHADER_STAGE_COMPUTE_BIT);
+      builder.use_storage_buffer(drawcall_buffer, VK_SHADER_STAGE_COMPUTE_BIT);
     },
     [=](Data &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
       auto blk = cmd.allocate_ubo<UniformConst>(); 
@@ -357,8 +357,10 @@ void SceneRenderer::reconstruct_gbuffer(rendergraph::RenderGraph &graph, const G
         gpu::StorageTextureBinding {8, resources.get_view(input.albedo)},
         gpu::StorageTextureBinding {9, resources.get_view(input.normal)},
         gpu::StorageTextureBinding {10, resources.get_view(input.material)},
-        gpu::StorageTextureBinding {11, resources.get_view(input.velocity)}
+        gpu::StorageTextureBinding {11, resources.get_view(input.velocity)},
+        gpu::SSBOBinding {12, resources.get_buffer(drawcall_buffer)}
       );
+
       auto extent = resources.get_image(input.albedo)->get_extent();
 
       cmd.bind_pipeline(reconstruct_pipeline);

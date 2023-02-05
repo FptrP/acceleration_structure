@@ -795,6 +795,7 @@ void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scen
   auto index_buffer = scene.get_target().index_buffer;
   auto primitive_buffer = scene.get_target().primitive_buffer;
   auto transform_buffer = scene.get_scene_transforms();
+  auto drawcalls_buffer = scene.get_drawcalls_buffer();
 
   graph.add_task<Nil>("FillTriangles",
   [&](Nil &, rendergraph::RenderGraphBuilder &builder){
@@ -802,6 +803,7 @@ void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scen
 
     builder.use_storage_buffer(reduce_buffer, VK_SHADER_STAGE_COMPUTE_BIT, true);
     builder.use_storage_buffer(transform_buffer, VK_SHADER_STAGE_COMPUTE_BIT, true);
+    builder.use_storage_buffer(drawcalls_buffer, VK_SHADER_STAGE_COMPUTE_BIT, true);
 
     builder.use_storage_buffer(triangle_verts, VK_SHADER_STAGE_COMPUTE_BIT, false);
     builder.use_storage_buffer(as_indirect_args, VK_SHADER_STAGE_COMPUTE_BIT, false);
@@ -815,7 +817,9 @@ void TriangleASBuilder::run(rendergraph::RenderGraph &graph, SceneRenderer &scen
       gpu::SSBOBinding {3, primitive_buffer},
       gpu::SSBOBinding {4, res.get_buffer(reduce_buffer)},
       gpu::SSBOBinding {5, res.get_buffer(as_indirect_args)},
-      gpu::SSBOBinding {6, res.get_buffer(triangle_verts)});
+      gpu::SSBOBinding {6, res.get_buffer(triangle_verts)},
+      gpu::SSBOBinding {7, res.get_buffer(drawcalls_buffer)}
+    );
 
     cmd.bind_pipeline(triangle_verts_pipeline);
     cmd.bind_descriptors_compute(0, {set}, {});

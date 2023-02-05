@@ -40,6 +40,10 @@ layout (set = 0, binding = 9, rg16) uniform image2D NORMAL_TEX;
 layout (set = 0, binding = 10, rgba8) uniform image2D MATERIAL_TEX;
 layout (set = 0, binding = 11, rg16f) uniform image2D VELOCITY_TEX;
 
+layout (set = 0, binding = 12, std430) readonly buffer DrawcallsBuffer {
+  uint DRAWCALLS[];
+};
+
 layout (set = 1, binding = 0) uniform sampler2D BINDLESS_MATERIAL_TEX[];
 
 layout(local_size_x = 8, local_size_y = 4) in;
@@ -61,7 +65,8 @@ void main() {
   }
 
   TriangleID tid = unpack_triangle_id(rawid);
-  Primitive primitive = PRIMITIVES[tid.primitive_index];
+  Drawcall drawcall = Drawcall(DRAWCALLS[2 * tid.drawcall_index], DRAWCALLS[2 * tid.drawcall_index + 1]); 
+  Primitive primitive = PRIMITIVES[drawcall.primitive_index];
 
   uint index = 3 * tid.triangle_index + primitive.index_offset;
   Vertex vert0 = VERTICES[primitive.vertex_offset + INDEXES[index + 0]];
@@ -72,7 +77,7 @@ void main() {
   vec3 v1 = get_vertex_pos(vert1);
   vec3 v2 = get_vertex_pos(vert2); 
   
-  mat4 transform = TRANSFORMS[tid.transform_index].model;
+  mat4 transform = TRANSFORMS[drawcall.transform_index].model;
   v0 = vec3(transform * vec4(v0, 1));
   v1 = vec3(transform * vec4(v1, 1));
   v2 = vec3(transform * vec4(v2, 1));
@@ -111,7 +116,7 @@ void main() {
 
   vec3 normal = bc.x * get_vertex_norm(vert0) + bc.y * get_vertex_norm(vert1) + bc.z * get_vertex_norm(vert2);
   
-  normal = vec3(TRANSFORMS[tid.transform_index].normal * vec4(normal, 0)); 
+  normal = vec3(TRANSFORMS[drawcall.transform_index].normal * vec4(normal, 0)); 
 
   Material material = MATERIALS[primitive.material_index];
   uint albedo_index = material.albedo_tex_index;

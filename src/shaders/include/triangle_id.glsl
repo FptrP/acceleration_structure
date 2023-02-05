@@ -1,45 +1,40 @@
 #ifndef TRIANGLE_ID_GLSL_INCLUDED
 #define TRIANGLE_ID_GLSL_INCLUDED
 
-#define TRIANGLE_BITS 16
-#define PRIMITIVE_BITS 8
-#define TRANSFORM_BITS 8
+#define TRIANGLE_BITS 20
+#define DRAWCALL_BITS 12
 
-#define TRIANGLE_MASK 0x0000FFFFu
-#define PRIMITIVE_MASK 0x00FF0000u
-#define TRANSFORM_MASK 0xFF000000u 
+#define TRIANGLE_MASK 0x000fffff
+#define DRAWCALL_MASK 0xfff00000 
 
 #define INVALID_TRIANGLE_ID ~0u
 
 struct TriangleID {
-  uint transform_index;
-  uint primitive_index;
+  uint drawcall_index;
   uint triangle_index;
 };
 
-uint pack_triangle_id(uint transform_index, uint primitive_index, uint triangle_index) {
+uint pack_triangle_id(uint drawcall_index, uint triangle_index) {
   uint res = 0;
   res |= triangle_index & TRIANGLE_MASK;
-  res |= (primitive_index << TRIANGLE_BITS) & PRIMITIVE_MASK;
-  res |= (transform_index << (TRIANGLE_BITS + PRIMITIVE_BITS)) & TRANSFORM_MASK;
+  res |= (drawcall_index << TRIANGLE_BITS) & DRAWCALL_MASK;
   return res;
 }
 
-uint set_triangle_id(uint packed_id, uint triangle_index) {
+/*uint set_triangle_id(uint packed_id, uint triangle_index) {
   packed_id = packed_id ^ (packed_id & TRIANGLE_MASK);
   packed_id |= triangle_index & TRIANGLE_MASK;
   return packed_id;
-}
+}*/
 
 uint pack_triangle_id(TriangleID tid) {
-  return pack_triangle_id(tid.transform_index, tid.primitive_index, tid.triangle_index);
+  return pack_triangle_id(tid.drawcall_index, tid.triangle_index);
 }
 
 TriangleID unpack_triangle_id(uint tid) {
-  TriangleID res = TriangleID(0, 0, 0);
+  TriangleID res = TriangleID(0, 0);
   res.triangle_index = tid & TRIANGLE_MASK;
-  res.primitive_index = (tid & PRIMITIVE_MASK) >> TRIANGLE_BITS;
-  res.transform_index = (tid & TRANSFORM_MASK) >> (TRIANGLE_BITS + PRIMITIVE_BITS);
+  res.drawcall_index = (tid >> TRIANGLE_BITS) & ((1 << DRAWCALL_BITS) - 1);
   return res;
 }
 
@@ -122,6 +117,11 @@ struct Material {
   uint metalic_roughness_index;
   uint flags;
   float alpha_cutoff;
+};
+
+struct Drawcall {
+  uint transform_index;
+  uint primitive_index;
 };
 
 uint lowbias32(uint x) {
