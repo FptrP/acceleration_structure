@@ -1,0 +1,97 @@
+#version 460
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1, r8) uniform writeonly image2D OUT_SHADOW; 
+
+layout (set = 0, binding = 2) uniform Constants {
+  mat4 camera_mat;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+#define MAX_LIGHTS 5
+
+struct Light {
+  vec4 position;
+  vec4 color;
+};
+
+layout (set = 0, binding = 3) uniform LightsBuffer {
+  Light g_lights[MAX_LIGHTS];
+};
+
+
+
+const int GROUP_X = 8;
+const int GROUP_Y = 4;
+
+
+float random(vec2 st)
+{
+  return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
+}
+
+bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter);
+
+layout (local_size_x = GROUP_X, local_size_y = GROUP_Y) in;
+void main()
+{
+  ivec2 tex_size = imageSize(OUT_SHADOW);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (pixel_pos.x >= tex_size.x || pixel_pos.y >= tex_size.y) {
+    return;
+  }
+
+  float pixel_depth = texture(DEPTH_TEX, screen_uv).x;
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+  float jitter = random(screen_uv);
+  
+  float occlusion = 0.f;
+
+  for (uint i = 0; i < MAX_LIGHTS; i++) {
+    vec3 light_pos = vec3(camera_mat * g_lights[i].position);
+    occlusion += trace_light_source(light_pos, view_vec, jitter)? 0.f : (1.f/MAX_LIGHTS);
+  }
+
+
+  imageStore(OUT_SHADOW, pixel_pos, vec4(occlusion, 0.f, 0.f, 0.f));
+}
+
+bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter) {
+  const uint NUM_SAMPLES = 30;
+  const float THIKNESS = 0.3;
+  const float RAND_STEP = 0.1;
+
+  vec3 direction = normalize(light_pos - view_vec);
+  
+  direction /= NUM_SAMPLES;
+
+  bool occluded = false;
+  
+  vec3 P = view_vec + jitter * direction;
+
+  for (uint i = 0; i <= NUM_SAMPLES; i++) {
+    vec3 S = project_view_vec(P, fovy, aspect, znear, zfar);
+
+    float scene_depth = texture(DEPTH_TEX, S.xy).x;
+
+    if (scene_depth + 1e-6 < S.z) {
+      vec3 scene_ray = reconstruct_view_vec(S.xy, scene_depth, fovy, aspect, znear, zfar);
+      vec3 delta = P - scene_ray;
+      if (dot(delta, delta) < THIKNESS * THIKNESS) {
+        occluded = true;
+        break;
+      }
+    }
+
+    float jitter = random(S.xy);
+    P += (1 - RAND_STEP + RAND_STEP * jitter) * direction;
+    //P += direction;
+  }
+  return occluded;
+}

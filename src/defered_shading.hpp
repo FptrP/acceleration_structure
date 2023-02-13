@@ -17,6 +17,7 @@ struct DeferedShadingPass {
     rendergraph::ImageResourceId ssao,
     rendergraph::ImageResourceId brdf_tex,
     rendergraph::ImageResourceId reflections,
+    LightsManager &lights,
     rendergraph::ImageResourceId out_image);
   
   void draw_ui();

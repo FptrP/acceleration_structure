@@ -1,7 +1,9 @@
 #include "scene_renderer.hpp"
 #include "gpu_transfer.hpp"
+#include "gpu/imgui_context.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <cmath>
 
@@ -55,6 +57,117 @@ struct GbufConst {
   float z_near;
   float z_far; 
 };
+
+LightsManager::LightsManager(rendergraph::RenderGraph &graph)
+{
+  lights_buf = graph.create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(Light) * MAX_LIGHTS, VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+  
+  lights_pipeline = gpu::create_graphics_pipeline();
+  lights_pipeline.set_program("draw_lights");
+  lights_pipeline.set_vertex_input({});
+  
+  gpu::Registers regs {};
+  regs.depth_stencil.depthTestEnable = VK_TRUE;
+  regs.depth_stencil.depthWriteEnable = VK_FALSE;
+  lights_pipeline.set_registers(regs);
+}
+
+static inline bool modify_set(float &dst, float src)
+{
+  float t = dst;
+  dst = src;
+  return fabs(t - src) > 1e-6;
+}
+
+static inline bool modify_set(glm::vec4 &dst, const glm::vec4 &src)
+{
+  bool modified = false;
+  modified |= modify_set(dst.x, src.x);
+  modified |= modify_set(dst.y, src.y);
+  modified |= modify_set(dst.z, src.z);
+  modified |= modify_set(dst.w, src.w);
+  return modified;
+}
+
+void LightsManager::set(uint32_t i, glm::vec3 pos, glm::vec3 color)
+{
+  auto &light = lights.at(i);
+
+  glm::vec4 lpos {pos, 1.f}; 
+  glm::vec4 lcol {color, 1.f};
+
+  light_changed |= modify_set(light.pos, lpos);
+  light_changed |= modify_set(light.color, lcol);
+}
+
+void LightsManager::update() {
+  gpu_transfer::write_buffer(lights_buf, 0, sizeof(Light) * lights.size(), lights.data());
+}
+
+void LightsManager::update_imgui() {
+  ImGui::Begin("Lights");
+  
+  for (uint32_t i = 0; i < lights.size(); i++) {
+    char name[32];
+    sprintf(name, "position%d", i);
+    light_changed |= ImGui::InputFloat3(name, &lights[i].pos.x);
+    sprintf(name, "color%d", i);
+    light_changed |= ImGui::SliderFloat3(name, &lights[i].color.x, 0.f, 5.f);
+  }
+  
+  ImGui::End();
+}
+
+void LightsManager::draw_lights(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target, rendergraph::ImageResourceId depth, const glm::mat4 &proj, const DrawTAAParams &params) {
+  struct PushConstants {
+    glm::mat4 projection;
+    glm::vec4 position;
+    glm::vec4 color;
+  };
+
+  struct Input {
+    rendergraph::ImageViewId rt;
+    rendergraph::ImageViewId depth;
+  };
+
+  glm::mat4 camera = params.camera; 
+
+  graph.add_task<Input>("DrawLights",
+  [&](Input &input, rendergraph::RenderGraphBuilder &builder){
+    input.rt = builder.use_color_attachment(target, 0, 0);
+    input.depth = builder.use_depth_attachment(depth, 0, 0);
+    
+    lights_pipeline.set_rendersubpass({true, {
+      builder.get_image_info(target).format,
+      builder.get_image_info(depth).format}});
+  },
+  [=](Input &input, rendergraph::RenderResources &res, gpu::CmdContext &cmd){
+    auto ext = res.get_image(input.rt)->get_extent();
+    
+    cmd.set_framebuffer(ext.width, ext.height, {
+      res.get_image_range(input.rt),
+      res.get_image_range(input.depth)  
+    });
+    
+    cmd.bind_pipeline(lights_pipeline);
+    cmd.bind_viewport(0.f, 0.f, ext.width, ext.height, 0.f, 1.f);
+    cmd.bind_scissors(0, 0, ext.width, ext.height);
+
+    for (uint32_t i = 0; i < lights.size(); i++) {
+      const auto &light = lights[i];
+      PushConstants pc {};
+      auto pos = light.pos;
+      pos.w = 1.f;
+      pc.position = camera * pos;
+      pc.color = light.color;
+      pc.projection = proj;
+      cmd.push_constants_graphics(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+      cmd.draw(6, 1, 0, 0);
+    }
+  });
+  
+
+}
 
 void SceneRenderer::init_pipeline(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer) {
   gpu::Registers regs {};

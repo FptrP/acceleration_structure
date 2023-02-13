@@ -22,10 +22,21 @@ layout (set = 0, binding = 4) uniform Constants {
   float zfar;
 };
 
-layout (set = 0, binding = 5) uniform sampler2D shadow_map;
+layout (set = 0, binding = 5) uniform sampler2D shadow_tex;
 layout (set = 0, binding = 6) uniform sampler2D occlusion_tex;
 layout (set = 0, binding = 7) uniform sampler2D brdf_tex;
 layout (set = 0, binding = 8) uniform sampler2D reflections_tex;
+
+#define MAX_LIGHTS 5
+
+struct Light {
+  vec4 position;
+  vec4 color;
+};
+
+layout (set = 0, binding = 9, std140) uniform LightsBuffer {
+  Light g_lights[MAX_LIGHTS];
+};
 
 layout (push_constant) uniform PushConsts {
   vec2 min_max_rougness;
@@ -33,6 +44,7 @@ layout (push_constant) uniform PushConsts {
 };
 
 vec4 sample_ocllusion_ssr(float depth, vec2 screen_uv);
+
 
 const vec3 LIGHT_POS = vec3(-1.85867, 5.81832, -0.247114);
 const vec3 LIGHT_RADIANCE = vec3(0.1, 0.1, 0.1);
@@ -61,38 +73,46 @@ void main() {
 
   const vec3 V = normalize(camera_pos - world_pos);
   const vec3 N = normal;
-  
+  float NdotV = max(dot(N, V), 0);
+
   vec3 F0 = F0_approximation(albedo, metallic);
   vec3 Lo = vec3(0);
 
-  vec3 L = normalize(LIGHT_POS - world_pos);
-  vec3 H = normalize(V + L);
+  for (uint light_id = 0; light_id < MAX_LIGHTS; light_id++)
+  {
+    vec3 light_pos = g_lights[light_id].position.xyz;
+    vec3 light_radiance = g_lights[light_id].color.xyz;
 
-  float light_distance = length(LIGHT_POS - world_pos);
-  vec3 radiance = LIGHT_RADIANCE * min(100/(light_distance * light_distance), 100.0);
+    vec3 L = normalize(light_pos - world_pos);
+    vec3 H = normalize(V + L);
 
-  float NdotL = max(dot(N, L), 0);
-  float NdotV = max(dot(N, V), 0);
+    float light_distance = length(light_pos - world_pos);
+    vec3 radiance = light_radiance * min(100/(light_distance * light_distance), 100.0);
 
-  float NDF = DistributionGGX(N, H, roughness);        
-  //float G = GeometrySmith(N, V, L, roughness);      
-  //float G = geometryGGX(NdotV, NdotL, roughness * roughness);
-  float G = brdfG2(NdotV, NdotL, roughness * roughness);
-  vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);  
+    float NdotL = max(dot(N, L), 0);
+    
 
-  vec3 kS = F;
-  vec3 kD = (vec3(1.0) - kS) * (1 - metallic);
+    float NDF = DistributionGGX(N, H, roughness);        
+    float G = brdfG2(NdotV, NdotL, roughness * roughness);
+    vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);  
+
+    vec3 kS = F;
+    vec3 kD = (vec3(1.0) - kS) * (1 - metallic);
 
   
-  vec3 specular = (NDF * G * F)/(4.0 * NdotV * NdotL + 0.0001);
+    vec3 specular = (NDF * G * F)/(4.0 * NdotV * NdotL + 0.0001);
+    Lo += (kD * albedo/PI + specular) * radiance * NdotL;
+  }
+  
+  float shadow_coef = texture(shadow_tex, screen_uv).x; 
+  Lo *= shadow_coef;
+
   float biased_rougness = mix(min_max_rougness.x, min_max_rougness.y, roughness);
   vec2 ssr_brdf = texture(brdf_tex, vec2(biased_rougness, NdotV)).xy;
-
-  Lo += (kD * albedo/PI + specular) * radiance * NdotL;
   Lo += reflection * (F0 * ssr_brdf.x + vec3(ssr_brdf.y));
-  vec3 color = occlusion * (vec3(0.6) * albedo + Lo);
   
-
+  vec3 color = occlusion * (vec3(0.1) * albedo + Lo);
+  
   if (show_ao != 0) {
     out_color = vec4(occlusion, occlusion, occlusion, 0);
   } else {

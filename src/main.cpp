@@ -31,6 +31,7 @@ namespace fs = std::filesystem;
 #include "taa.hpp"
 #include "depth_as.hpp"
 #include "rtfx.hpp"
+#include "contact_shadows.hpp"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <lib/stb_image_write.h>
@@ -166,6 +167,15 @@ static void get_rgba_cb(ReadBackData &&image) {
   std::cout << "STBI: " << res << "\n";
 }
 
+static void set_lights(LightsManager &lights) {
+  lights.set(0, {-3.16, 3, -0.95}, {0.3, 0, 0});
+  lights.set(1, {0.301297, 2.99659, -0.829233}, {0, 0.3, 0});
+  lights.set(2, {0.337057, 1.35504, -1.02239}, {0, 0, 0.3});
+  lights.set(3, {-3.08784, 1.35504, -1.14198}, {0.2, 0.2, 0});
+
+  lights.set(4, {-1.46516, 6.62574, -1.10393}, {0.9, 0.9, 0.9});
+}
+
 static void load_shaders(const fs::path &config_path) {
   const fs::path shader_dir = config_path.parent_path();
 
@@ -247,6 +257,7 @@ int main(int argc, char **argv) {
   //auto scene = scene::load_tinygltf_scene(transfer_pool,  "assets/gltf/st_dragon/stanford-dragon.gltf", USE_RAY_QUERY);
   //auto scene = scene::load_tinygltf_scene(transfer_pool,  "assets/gltf/sibernik_gltf/untitled.gltf", USE_RAY_QUERY);
 
+  bool use_rt_contact_shadows = false;
 #if USE_RAY_QUERY
   bool use_rt_ao = false;
   scene::SceneAccelerationStructure acceleration_struct;
@@ -268,22 +279,16 @@ int main(int argc, char **argv) {
   SceneRenderer scene_renderer {scene};
   scene_renderer.init_pipeline(render_graph, gbuffer);
   DeferedShadingPass shading_pass {render_graph, app_init.window};  
-  GbufferCompressor tree_builder {render_graph, transfer_pool, WIDTH/2, HEIGHT/2};
   TriangleASBuilder triangle_as_builder {render_graph, transfer_pool};
-
+  
+  LightsManager light_manager {render_graph};
+  set_lights(light_manager);
+  ContactShadows contact_shadows {};
+  contact_shadows.init(render_graph, WIDTH/2, HEIGHT/2);
+  
   imgui_create_fonts(transfer_pool);
 
   auto readback_image = create_readbackimage(render_graph);
-  auto shadows_tex = render_graph.create_image(
-    VK_IMAGE_TYPE_2D, 
-    gpu::ImageInfo{
-      VK_FORMAT_D24_UNORM_S8_UINT, 
-      VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT, 
-      1024, 1024, 1, 1, 4
-    }, 
-    VK_IMAGE_TILING_OPTIMAL, 
-    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT);
-
   auto color_out_tex = render_graph.create_image(VK_IMAGE_TYPE_2D,
     gpu::ImageInfo {VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, WIDTH, HEIGHT},
     VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -334,6 +339,7 @@ int main(int argc, char **argv) {
     draw_params.jitter = use_jitter? next_taa_offset(gbuffer.w, gbuffer.h) : glm::vec4{0.f, 0.f, 0.f, 0.f};
 
     scene_renderer.update_scene();
+    light_manager.update();
     shading_pass.update_params(camera.get_view_mat(), shadow_mvp, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f);
     
     gpu_transfer::process_requests(render_graph);
@@ -346,7 +352,6 @@ int main(int argc, char **argv) {
     triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera, projection);
 
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
-    tree_builder.build_tree(render_graph, gbuffer.depth, 1, gbuffer.downsampled_normals, draw_params);
 
     ImGui::Begin("Read texture");
     bool depth = ImGui::Button("Depth") && (image_read_back == INVALID_READBACK);
@@ -360,9 +365,11 @@ int main(int argc, char **argv) {
     ImGui::Checkbox("Enable jitter", &use_jitter);
 #if USE_RAY_QUERY
     ImGui::Checkbox("Enable RT AO", &use_rt_ao);
+    ImGui::Checkbox("Enable RT Contact shadows", &use_rt_contact_shadows);
 #endif
     ImGui::End();
 
+    light_manager.update_imgui();
     ssr.render_ui();
     gtao.draw_ui();
     shading_pass.draw_ui();
@@ -387,7 +394,9 @@ int main(int argc, char **argv) {
     gtao.add_filter_pass(render_graph, gtao_params, gbuffer.depth);
     gtao.add_accumulate_pass(render_graph, draw_params, gbuffer);
 
-    shading_pass.draw(render_graph, gbuffer, shadows_tex, gtao.accumulated_ao, ssr.get_preintegrated_brdf(), ssr.get_blurred(), color_out_tex);
+    contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? triangle_as_builder.get_tlas() : nullptr);
+
+    shading_pass.draw(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, ssr.get_preintegrated_brdf(), ssr.get_blurred(), light_manager, color_out_tex);
     taa_pass.run(render_graph, gbuffer, color_out_tex, draw_params);
     
     if (output_readback && image_read_back == INVALID_READBACK) {
@@ -399,6 +408,8 @@ int main(int argc, char **argv) {
 
     add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
     //add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
+
+    light_manager.draw_lights(render_graph, render_graph.get_backbuffer(), gbuffer.depth, projection, draw_params);
 
     add_present_subpass(render_graph);
     render_graph.submit();

@@ -33,6 +33,31 @@ struct DrawTAAParams {
   glm::vec4 fovy_aspect_znear_zfar;
 };
 
+struct LightsManager {
+  static constexpr uint32_t MAX_LIGHTS = 5;
+
+  LightsManager(rendergraph::RenderGraph &graph);
+  
+  void set(uint32_t i, glm::vec3 pos, glm::vec3 color);
+  void update();
+  void update_imgui();
+  void draw_lights(rendergraph::RenderGraph &graph, rendergraph::ImageResourceId target, rendergraph::ImageResourceId depth, const glm::mat4 &proj, const DrawTAAParams &params);
+
+  auto get_buffer() const { return lights_buf; }
+
+private:
+  
+  struct Light {
+    glm::vec4 pos {0.f, 0.f, 0.f, 1.f};
+    glm::vec4 color {0.f, 0.f, 0.f, 1.f};
+  };
+
+  std::array<Light, MAX_LIGHTS> lights;
+  bool light_changed;
+  rendergraph::BufferResourceId lights_buf;
+  gpu::GraphicsPipeline lights_pipeline;
+};
+
 constexpr uint32_t MAX_DRAWCALLS = 2048u; 
 
 struct SceneRenderer {

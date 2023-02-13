@@ -36,6 +36,7 @@ add_executable(main
   taa.cpp
   depth_as.cpp
   rtfx.cpp
+  contact_shadows.cpp
   
   scene/scene.cpp
   scene/scene_as.cpp

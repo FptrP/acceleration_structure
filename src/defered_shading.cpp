@@ -50,6 +50,7 @@ void DeferedShadingPass::draw(rendergraph::RenderGraph &graph,
   rendergraph::ImageResourceId ssao,
   rendergraph::ImageResourceId brdf_tex,
   rendergraph::ImageResourceId reflections,
+  LightsManager &lights,
   rendergraph::ImageResourceId out_image)
 {
   struct PassData {
@@ -72,6 +73,8 @@ void DeferedShadingPass::draw(rendergraph::RenderGraph &graph,
   PushConsts pc {min_max_roughness, only_ao? 1u : 0u};
   pipeline.set_rendersubpass({false, {graph.get_descriptor(out_image).format}});
 
+  auto lights_buffer = lights.get_buffer();
+
   graph.add_task<PassData>("DeferedShading",
     [&](PassData &input, rendergraph::RenderGraphBuilder &builder){
       input.albedo = builder.sample_image(gbuffer.albedo, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -79,12 +82,13 @@ void DeferedShadingPass::draw(rendergraph::RenderGraph &graph,
       input.material = builder.sample_image(gbuffer.material, VK_SHADER_STAGE_FRAGMENT_BIT);
       input.depth = builder.sample_image(gbuffer.depth, VK_SHADER_STAGE_FRAGMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
       input.rt = builder.use_color_attachment(out_image, 0, 0);
-      input.shadow = builder.sample_image(shadow, VK_SHADER_STAGE_FRAGMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1);
+      input.shadow = builder.sample_image(shadow, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 0, 1, 0, 1);
       input.ssao = builder.sample_image(ssao, VK_SHADER_STAGE_FRAGMENT_BIT);
       input.ssr = builder.sample_image(reflections, VK_SHADER_STAGE_FRAGMENT_BIT);
       input.brdf = builder.sample_image(brdf_tex, VK_SHADER_STAGE_FRAGMENT_BIT);
       input.ubo = ubo_consts;
-      builder.use_uniform_buffer(input.ubo, VK_SHADER_STAGE_VERTEX_BIT);
+      builder.use_uniform_buffer(input.ubo, VK_SHADER_STAGE_FRAGMENT_BIT);
+      builder.use_uniform_buffer(lights_buffer, VK_SHADER_STAGE_FRAGMENT_BIT);
     },
     [=](PassData &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
       
@@ -99,7 +103,8 @@ void DeferedShadingPass::draw(rendergraph::RenderGraph &graph,
         gpu::TextureBinding {5, resources.get_view(input.shadow), sampler},
         gpu::TextureBinding {6, resources.get_view(input.ssao), sampler},
         gpu::TextureBinding {7, resources.get_view(input.brdf), sampler},
-        gpu::TextureBinding {8, resources.get_view(input.ssr), sampler});
+        gpu::TextureBinding {8, resources.get_view(input.ssr), sampler},
+        gpu::UBOBinding {9, resources.get_buffer(lights_buffer)});
       
       const auto &image_info = resources.get_image(input.rt)->get_extent();
       auto w = image_info.width;
@@ -109,7 +114,7 @@ void DeferedShadingPass::draw(rendergraph::RenderGraph &graph,
       cmd.bind_pipeline(pipeline);
       cmd.bind_viewport(0.f, 0.f, float(w), float(h), 0.f, 1.f);
       cmd.bind_scissors(0, 0, w, h);
-      cmd.bind_descriptors_graphics(0, {set}, {0});
+      cmd.bind_descriptors_graphics(0, {set}, {0, 0});
       cmd.push_constants_graphics(VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
       cmd.draw(3, 1, 0, 0);
       cmd.end_renderpass();

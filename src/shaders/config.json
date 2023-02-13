@@ -164,5 +164,15 @@
   },
   "tree_clear" : {
     "compute" : "tree_compressor/clear_aabb_comp"
+  },
+  "contact_shadows_software" : {
+    "compute" : "contact_shadows/shadows_software_comp"
+  },
+  "contact_shadows_hardware" : {
+    "compute" : "contact_shadows/shadows_hardware_comp"
+  },
+  "draw_lights" : {
+    "vertex" : "lights/lights_vert",
+    "fragment" : "lights/lights_frag"
   }
 }

@@ -46,7 +46,7 @@ void add_backbuffer_subpass(rendergraph::RenderGraph &graph, rendergraph::ImageR
       cmd.bind_viewport(viewport);
       cmd.bind_scissors(scissors);
       cmd.draw(3, 1, 0, 0);
-      imgui_draw(cmd.get_command_buffer());
+      //imgui_draw(cmd.get_command_buffer());
       cmd.end_renderpass();
     });
 }
@@ -87,12 +87,47 @@ void add_backbuffer_subpass(rendergraph::RenderGraph &graph, gpu::ImagePtr &imag
       cmd.bind_viewport(viewport);
       cmd.bind_scissors(scissors);
       cmd.draw(3, 1, 0, 0);
-      imgui_draw(cmd.get_command_buffer());
+      //imgui_draw(cmd.get_command_buffer());
       cmd.end_renderpass();
     });
 }
 
 void add_present_subpass(rendergraph::RenderGraph &graph) {
+  
+  pipeline = gpu::create_graphics_pipeline();
+  pipeline.set_program("texdraw");
+  pipeline.set_registers({});
+  pipeline.set_vertex_input({});
+
+  struct SubpassData {
+    rendergraph::ImageViewId backbuff_view;
+  };
+
+  graph.add_task<SubpassData>("ImguiSubpass",
+    [&](SubpassData &data, rendergraph::RenderGraphBuilder &builder){
+      data.backbuff_view = builder.use_backbuffer_attachment();
+      auto desc = builder.get_image_info(data.backbuff_view);
+      pipeline.set_rendersubpass({false, {desc.format}});
+    },
+    [=](SubpassData &data, rendergraph::RenderResources &resources, gpu::CmdContext &cmd) mutable {
+      const auto &ext = resources.get_image(data.backbuff_view)->get_extent();
+      
+      auto set = resources.allocate_set(pipeline.get_layout(0));
+      auto range = gpu::make_image_range2D(0, ~0u);
+
+
+      VkRect2D scissors {{0, 0}, VkExtent2D {ext.width, ext.height}};
+      VkViewport viewport {0.f, 0.f, (float)ext.width, (float)ext.height, 0.f, 1.f};
+
+      cmd.set_framebuffer(ext.width, ext.height, {resources.get_image_range(data.backbuff_view)});
+      cmd.bind_pipeline(pipeline);
+      cmd.bind_viewport(viewport);
+      cmd.bind_scissors(scissors);
+      imgui_draw(cmd.get_command_buffer());
+      cmd.end_renderpass();
+    });
+
+
   struct Nil {};
   graph.add_task<Nil>("presentPrepare",
   [&](Nil &, rendergraph::RenderGraphBuilder &builder){

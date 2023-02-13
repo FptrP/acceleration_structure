@@ -109,8 +109,8 @@ private:
   uint32_t depth_lod = 0;
 
   gpu::BufferPtr random_vectors;
-  bool mis_gtao = true;
-  bool two_directions = false;
+  bool mis_gtao = false;
+  bool two_directions = true;
   bool only_reflections = false;
   bool clear_history = false;
   float weight_ratio = 1.0;
