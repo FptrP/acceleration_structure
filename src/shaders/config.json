@@ -105,6 +105,9 @@
   "sssr_trace" : {
     "compute" : "advanced_ssr/trace_comp"
   },
+  "sssr_trace_as" : {
+    "compute" : "advanced_ssr/trace_as_comp"
+  },
   "sssr_trace_indirect" : {
     "compute" : "advanced_ssr/trace_indirect_comp"
   },

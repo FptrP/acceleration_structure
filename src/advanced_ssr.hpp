@@ -23,7 +23,8 @@ struct AdvancedSSR {
     const AdvancedSSRParams &params,
     const DrawTAAParams &taa_params,
     const Gbuffer &gbuff,
-    rendergraph::ImageResourceId ssr_occlusion);
+    rendergraph::ImageResourceId ssr_occlusion,
+    VkAccelerationStructureKHR as = nullptr);
 
   void preintegrate_pdf(rendergraph::RenderGraph &graph);
   void preintegrate_brdf(rendergraph::RenderGraph &graph);
@@ -45,6 +46,7 @@ private:
   rendergraph::BufferResourceId glossy_tiles;
   
   gpu::ComputePipeline trace_pass;
+  gpu::ComputePipeline trace_pass_as;
   gpu::ComputePipeline filter_pass;
   gpu::ComputePipeline blur_pass;
   gpu::ComputePipeline classification_pass;
@@ -82,6 +84,12 @@ private:
     const AdvancedSSRParams &params,
     const Gbuffer &gbuff,
     rendergraph::ImageResourceId ssr_occlusion);
+
+  void run_trace_as_pass(
+    rendergraph::RenderGraph &graph,
+    const AdvancedSSRParams &params,
+    const Gbuffer &gbuff,
+    VkAccelerationStructureKHR acceleration_struct);
   
   void run_trace_indirect_pass(
     rendergraph::RenderGraph &graph,

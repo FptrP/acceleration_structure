@@ -258,6 +258,7 @@ int main(int argc, char **argv) {
   //auto scene = scene::load_tinygltf_scene(transfer_pool,  "assets/gltf/sibernik_gltf/untitled.gltf", USE_RAY_QUERY);
 
   bool use_rt_contact_shadows = false;
+  bool use_rt_reflections = false;
 #if USE_RAY_QUERY
   bool use_rt_ao = false;
   scene::SceneAccelerationStructure acceleration_struct;
@@ -271,7 +272,6 @@ int main(int argc, char **argv) {
   GTAO gtao {render_graph, WIDTH, HEIGHT, USE_RAY_QUERY, 1};
   AdvancedSSR ssr {render_graph, WIDTH, HEIGHT};
   TAA taa_pass {render_graph, WIDTH, HEIGHT};
-  RTReflections rt_reflections {render_graph, WIDTH/2, HEIGHT/2, true};
 
   ssr.preintegrate_pdf(render_graph);
   ssr.preintegrate_brdf(render_graph);
@@ -366,6 +366,7 @@ int main(int argc, char **argv) {
 #if USE_RAY_QUERY
     ImGui::Checkbox("Enable RT AO", &use_rt_ao);
     ImGui::Checkbox("Enable RT Contact shadows", &use_rt_contact_shadows);
+    ImGui::Checkbox("Enable RT Reflection", &use_rt_reflections);
 #endif
     ImGui::End();
 
@@ -380,7 +381,7 @@ int main(int argc, char **argv) {
     GTAORTParams gtao_rt_params {camera_to_world, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
     AdvancedSSRParams assr_params {normal_mat, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};    
     
-    ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw);
+    ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr);
     
 #if USE_RAY_QUERY
     if (use_rt_ao) {
@@ -404,10 +405,8 @@ int main(int argc, char **argv) {
       image_read_back = readback_system.read_image(render_graph, readback_image);
     }
     
-    rt_reflections.run(render_graph, gbuffer, triangle_as_builder.get_tlas(), assr_params);
-
     add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
-    //add_backbuffer_subpass(render_graph, rt_reflections.get_target(), sampler, DrawTex::ShowAll);
+    //add_backbuffer_subpass(render_graph, ssr.get_blurred(), sampler, DrawTex::ShowAll);
 
     light_manager.draw_lights(render_graph, render_graph.get_backbuffer(), gbuffer.depth, projection, draw_params);
 
