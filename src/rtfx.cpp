@@ -1,7 +1,7 @@
 #include "rtfx.hpp"
 
 RTReflections::RTReflections(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height, bool triangles) {
-  gpu::ImageInfo rays_info {VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
+  gpu::ImageInfo rays_info {VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
   result = graph.create_image(VK_IMAGE_TYPE_2D, rays_info, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_STORAGE_BIT);
   pipeline = gpu::create_compute_pipeline(triangles? "trace_triangle_as" : "trace_depth_as");
   sampler = gpu::create_sampler(gpu::DEFAULT_SAMPLER);

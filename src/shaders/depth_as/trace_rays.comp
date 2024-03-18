@@ -17,7 +17,11 @@ layout (set = 0, binding = 3) uniform TraceParams {
 };
 
 layout (set = 0, binding = 4) uniform accelerationStructureEXT DEPTH_AS;
-layout (set = 0, binding = 5, rgba16) uniform image2D OUT_REFLECTION;
+layout (set = 0, binding = 5, rgba16f) uniform image2D OUT_REFLECTION;
+
+float ray_pixel_intersect(vec2 ray_start, vec2 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right);
+float ray_pixel_intersect(vec3 ray_start, vec3 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right, float pixel_depth);
+bool find_correct_hit(vec3 ray_start, vec3 ray_dir, vec2 tex_size, ivec2 first_hit, out vec3 out_hit_pos, out float out_t);
 
 layout (local_size_x = 8, local_size_y = 4) in;
 void main() {
@@ -35,50 +39,146 @@ void main() {
   vec3 pixel_normal = normalize(vec3(normal_mat * vec4(pixel_normal_world, 0)));
   
   vec3 R = normalize(reflect(view_vec, pixel_normal));
-  vec3 pad = 0.05 * normalize(view_vec);
+  view_vec *= 0.98;
 
-  vec3 screen_space_start = project_view_vec(view_vec - pad, fovy, aspect, znear, zfar);
-  vec3 screen_space_dir = project_view_vec(view_vec - pad + R, fovy, aspect, znear, zfar);
+  vec3 screen_space_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+  vec3 screen_space_dir = project_view_vec(view_vec + R, fovy, aspect, znear, zfar);
   screen_space_dir -= screen_space_start;
   screen_space_dir *= (1-screen_space_start.z)/abs(screen_space_dir.z);
-  
+
   rayQueryEXT ray_query;
-	rayQueryInitializeEXT(ray_query, DEPTH_AS, 0, 0xFF, view_vec - pad, 0.005, R, 20.0);
+	rayQueryInitializeEXT(ray_query, DEPTH_AS, 0, 0xFF, screen_space_start, 0.005, screen_space_dir, 1.0);
 
-  vec2 hit_uv;
+  
+  ivec2 hit_pixel;
   bool valid_hit = false;
-
+  uint max_steps = 0;
   while (rayQueryProceedEXT(ray_query)) {
 
     if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
       int primitive_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false); 
-      ivec2 hit_pixel = ivec2(primitive_id % tex_size.x, primitive_id/tex_size.x);
-      hit_uv = (hit_pixel + vec2(0.5, 0.5))/tex_size;
-      float hit_depth = texture(DEPTH, hit_uv).x;
+      hit_pixel = ivec2(primitive_id % tex_size.x, primitive_id/tex_size.x);
+      
+      vec2 hit_center = (vec2(hit_pixel) + vec2(0.5, 0.5))/tex_size; 
+      vec2 hit_top = vec2(hit_pixel)/tex_size;
+      vec2 hit_bot = (vec2(hit_pixel) + vec2(1, 1))/tex_size;
+      float hit_depth = textureLod(DEPTH, hit_center, 0).x;
 
-      vec3 hit = vec3(hit_uv, hit_depth);
-      float t = dot(hit.xy - screen_space_start.xy, screen_space_dir.xy)/dot(screen_space_dir.xy, screen_space_dir.xy);
-      vec3 t_hit = screen_space_start + screen_space_dir * t;
+      float t = ray_pixel_intersect(screen_space_start, screen_space_dir, hit_top, hit_bot, hit_depth);
 
-      vec2 pixel_dist = vec2(tex_size) * abs(t_hit.xy - hit.xy);
-      vec2 offset = vec2(tex_size) * abs(hit_uv - screen_space_start.xy);
-
-      if (max(offset.x, offset.y) > 3 &&  max(pixel_dist.x, pixel_dist.y) < 1 && t_hit.z + 1e-12 > hit.z) {
+      if (t > 0 || max_steps > 2)
+      {
         valid_hit = true;
         break;
       }
     }
+    max_steps++;
   }
 
   rayQueryTerminateEXT(ray_query);
-  
-  vec3 color = vec3(0, 0, 0);
-  if (valid_hit)
-  {
-    color = texture(ALBEDO, hit_uv).xyz;  
+
+  vec3 hit_pos;
+  float t;
+  if (valid_hit) {
+    valid_hit = find_correct_hit(screen_space_start, screen_space_dir, tex_size, hit_pixel, hit_pos, t);
   }
 
-  vec4 hit_color = vec4(color, 1.0);
+  vec3 color = vec3(0, 0, 0);
+
+  if (valid_hit)
+  {
+    color = texture(ALBEDO, hit_pos.xy).xyz;  
+  }
+
+  vec4 hit_color = vec4(color, max_steps);
   
   imageStore(OUT_REFLECTION, pixel_pos, hit_color);
+}
+
+float ray_pixel_intersect(vec2 ray_start, vec2 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right, bool swp) {
+  float x_coord = (ray_dir.x >= 0 ^^ swp)? pixel_top_left.x : pixel_bot_right.x;
+  float y_coord = (ray_dir.y >= 0 ^^ swp)? pixel_top_left.y : pixel_bot_right.y;
+
+  bool deg_x = false;//abs(ray_dir.x) < 1e-4;
+  bool deg_y = false; //abs(ray_dir.y) < 1e-4;
+
+  float t1 = (x_coord - ray_start.x)/ray_dir.x;
+  float y1 = ray_start.y + t1 * ray_dir.y;
+  if (y1 < pixel_top_left.y || y1 > pixel_bot_right.y || t1 < 0 || deg_x)
+    t1 = 1e20;
+
+  float t2 = (y_coord - ray_start.y)/ray_dir.y;
+  float x2 = ray_start.x + t2 * ray_dir.x;
+  if (x2 < pixel_top_left.x || x2 > pixel_bot_right.x  || t2 < 0 || deg_y)
+    t2 = 1e20;
+  
+  float t = min(t1, t2);
+  
+  return t < 1000? t : -1;
+}
+
+float ray_pixel_intersect(vec2 ray_start, vec2 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right) {
+  float t1 = ray_pixel_intersect(ray_start, ray_dir, pixel_top_left, pixel_bot_right, false);
+  float t2 = ray_pixel_intersect(ray_start, ray_dir, pixel_top_left, pixel_bot_right, true);
+
+  if (t1 > 0 && t2 > 0)
+    return 0.5 * (t1 + t2); 
+  return t1;
+}
+
+float ray_pixel_intersect(vec3 ray_start, vec3 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right, float pixel_depth) {
+  float x_coord = (ray_dir.x >= 0)? pixel_top_left.x : pixel_bot_right.x;
+  float y_coord = (ray_dir.y >= 0)? pixel_top_left.y : pixel_bot_right.y;
+
+  float t1 = (x_coord - ray_start.x)/ray_dir.x;
+  float y1 = ray_start.y + t1 * ray_dir.y;
+  if (y1 < pixel_top_left.y || y1 > pixel_bot_right.y || t1 < 0)
+    t1 = 1e20;
+
+  float t2 = (y_coord - ray_start.y)/ray_dir.y;
+  float x2 = ray_start.x + t2 * ray_dir.x;
+  if (x2 < pixel_top_left.x || x2 > pixel_bot_right.x  || t2 < 0)
+    t2 = 1e20;
+  
+  float t = min(t1, t2);
+
+  if (t > 1000)
+    t = -1;
+  //check pixel corner
+
+  if (t > 0 && ray_start.z + t * ray_dir.z >= pixel_depth)
+    return t;
+
+  float t3 = (pixel_depth - ray_start.z)/ray_dir.z; //check depth intersection
+  vec2 p = ray_start.xy + t3 * ray_dir.xy;
+  if (t3 > 0 && all(greaterThanEqual(p, pixel_top_left)) && all(lessThan(p, pixel_bot_right)))
+    return t3;
+  
+  return -1;
+}
+
+bool find_correct_hit(vec3 ray_start, vec3 ray_dir, vec2 tex_size, ivec2 first_hit, out vec3 out_hit_pos, out float out_t) {
+
+  vec2 hit_center = (vec2(first_hit) + vec2(0.5, 0.5))/tex_size; 
+  vec2 hit_top = vec2(first_hit)/tex_size;
+  vec2 hit_bot = (vec2(first_hit) + vec2(1, 1))/tex_size;
+  float hit_depth = textureLod(DEPTH, hit_center, 0).x;
+
+  float t = ray_pixel_intersect(ray_start, ray_dir, hit_top, hit_bot, hit_depth);
+
+  if (t > 0) {
+    out_t = t;
+    out_hit_pos = ray_start + t * ray_dir;
+
+    float ray_depth = ray_start.z + t * ray_dir.z;
+
+    float ray_z = linearize_depth2(ray_depth, znear, zfar);
+    float scene_z = linearize_depth2(hit_depth, znear, zfar);
+
+    if (ray_z + 0.1 < scene_z)
+      return false;
+    
+    return true;
+  }
+  return false;
 }

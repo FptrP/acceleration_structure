@@ -18,7 +18,8 @@ void add_backbuffer_subpass(rendergraph::RenderGraph &graph, rendergraph::ImageR
   pipeline.set_program("texdraw");
   pipeline.set_registers({});
   pipeline.set_vertex_input({});
-  
+  pipeline.set_rendersubpass({false, {graph.get_descriptor(graph.get_backbuffer()).format}});
+
   graph.add_task<SubpassData>("BackbufSubpass",
     [&](SubpassData &data, rendergraph::RenderGraphBuilder &builder){
       data.backbuff_view = builder.use_backbuffer_attachment();
@@ -92,18 +93,19 @@ void add_backbuffer_subpass(rendergraph::RenderGraph &graph, gpu::ImagePtr &imag
     });
 }
 
-void add_present_subpass(rendergraph::RenderGraph &graph) {
+void add_present_subpass(rendergraph::RenderGraph &graph, bool draw_ui) {
   
-  pipeline = gpu::create_graphics_pipeline();
-  pipeline.set_program("texdraw");
-  pipeline.set_registers({});
-  pipeline.set_vertex_input({});
-
   struct SubpassData {
     rendergraph::ImageViewId backbuff_view;
   };
 
-  graph.add_task<SubpassData>("ImguiSubpass",
+  if (draw_ui) {
+    pipeline = gpu::create_graphics_pipeline();
+    pipeline.set_program("texdraw");
+    pipeline.set_registers({});
+    pipeline.set_vertex_input({});
+    
+    graph.add_task<SubpassData>("ImguiSubpass",
     [&](SubpassData &data, rendergraph::RenderGraphBuilder &builder){
       data.backbuff_view = builder.use_backbuffer_attachment();
       auto desc = builder.get_image_info(data.backbuff_view);
@@ -111,11 +113,6 @@ void add_present_subpass(rendergraph::RenderGraph &graph) {
     },
     [=](SubpassData &data, rendergraph::RenderResources &resources, gpu::CmdContext &cmd) mutable {
       const auto &ext = resources.get_image(data.backbuff_view)->get_extent();
-      
-      auto set = resources.allocate_set(pipeline.get_layout(0));
-      auto range = gpu::make_image_range2D(0, ~0u);
-
-
       VkRect2D scissors {{0, 0}, VkExtent2D {ext.width, ext.height}};
       VkViewport viewport {0.f, 0.f, (float)ext.width, (float)ext.height, 0.f, 1.f};
 
@@ -126,7 +123,9 @@ void add_present_subpass(rendergraph::RenderGraph &graph) {
       imgui_draw(cmd.get_command_buffer());
       cmd.end_renderpass();
     });
-
+  } else {
+    ImGui::Render();
+  }
 
   struct Nil {};
   graph.add_task<Nil>("presentPrepare",

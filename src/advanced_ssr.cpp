@@ -38,6 +38,7 @@ AdvancedSSR::AdvancedSSR(rendergraph::RenderGraph &graph, uint32_t w, uint32_t h
   trace_pass.set_program("sssr_trace");
   
   trace_pass_as = gpu::create_compute_pipeline("sssr_trace_as");
+  trace_pass_depth_as = gpu::create_compute_pipeline("sssr_trace_depth_as");
 
   filter_pass = gpu::create_compute_pipeline();
   filter_pass.set_program("sssr_filter");
@@ -219,7 +220,8 @@ void AdvancedSSR::run_trace_as_pass(
     rendergraph::RenderGraph &graph,
     const AdvancedSSRParams &params,
     const Gbuffer &gbuff,
-    VkAccelerationStructureKHR acceleration_struct)
+    VkAccelerationStructureKHR acceleration_struct,
+    bool depth_as)
 {
   TraceParams config {
     params.normal_mat,
@@ -260,7 +262,8 @@ void AdvancedSSR::run_trace_as_pass(
       input.out = builder.use_storage_image(rays, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
     },
     [=](Input &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
-      auto set = resources.allocate_set(trace_pass_as, 0);
+      auto &pipeline = depth_as? trace_pass_depth_as : trace_pass_as; 
+      auto set = resources.allocate_set(pipeline, 0);
       auto blk = cmd.allocate_ubo<TraceParams>();
       *blk.ptr = config;
 
@@ -274,7 +277,7 @@ void AdvancedSSR::run_trace_as_pass(
         gpu::StorageTextureBinding {6, resources.get_view(input.out)});
       
       auto ext = resources.get_image(input.out)->get_extent();
-      cmd.bind_pipeline(trace_pass_as);
+      cmd.bind_pipeline(pipeline);
       cmd.bind_descriptors_compute(0, {set}, {blk.offset, 0});
       cmd.push_constants_compute(0, sizeof(push_consts), &push_consts);
       cmd.dispatch((ext.width + 7)/8, (ext.height + 7)/8, 1);
@@ -375,6 +378,7 @@ void AdvancedSSR::run_trace_indirect_pass(
 
 void AdvancedSSR::run_filter_pass(
   rendergraph::RenderGraph &graph,
+  rendergraph::ImageResourceId ssr_color,
   const AdvancedSSRParams &params,
   const Gbuffer &gbuff)
 {
@@ -409,7 +413,7 @@ void AdvancedSSR::run_filter_pass(
     [&](Input &input, rendergraph::RenderGraphBuilder &builder) {
       input.depth = builder.sample_image(gbuff.depth, VK_SHADER_STAGE_COMPUTE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 0, 10, 0, 1);
       input.normal = builder.sample_image(gbuff.normal, VK_SHADER_STAGE_COMPUTE_BIT);
-      input.albedo = builder.sample_image(gbuff.albedo, VK_SHADER_STAGE_COMPUTE_BIT);
+      input.albedo = builder.sample_image(ssr_color, VK_SHADER_STAGE_COMPUTE_BIT);
       input.rays = builder.sample_image(rays, VK_SHADER_STAGE_COMPUTE_BIT);
       input.material = builder.sample_image(gbuff.material, VK_SHADER_STAGE_COMPUTE_BIT);
       input.reflection = builder.use_storage_image(reflections, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
@@ -610,19 +614,21 @@ void AdvancedSSR::run(
   const AdvancedSSRParams &params,
   const DrawTAAParams &taa_params,
   const Gbuffer &gbuff,
+  rendergraph::ImageResourceId ssr_color,
   rendergraph::ImageResourceId ssr_occlusion,
-  VkAccelerationStructureKHR as)
+  VkAccelerationStructureKHR as,
+  bool depth_as)
 {
   //clear_indirect_params(graph);
   //run_classification_pass(graph, params, gbuff);
   //run_tile_regression_pass(graph, params, gbuff);
   //run_trace_indirect_pass(graph, params, gbuff);
   if (as) {
-    run_trace_as_pass(graph, params, gbuff, as);
+    run_trace_as_pass(graph, params, gbuff, as, depth_as);
   } else {
     run_trace_pass(graph, params, gbuff, ssr_occlusion);
   }
-  run_filter_pass(graph, params, gbuff);
+  run_filter_pass(graph, ssr_color, params, gbuff);
   run_blur_pass(graph, params, taa_params, gbuff);
 }
 

@@ -32,5 +32,34 @@ private:
   bool only_ao = false;
 };
 
+struct DiffuseSpecularPass {
+  DiffuseSpecularPass(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height);
+  
+  void run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, rendergraph::ImageResourceId shadow,
+    rendergraph::ImageResourceId occlusion, const DrawTAAParams &params, LightsManager &lights);
+
+  rendergraph::ImageResourceId get_diffuse() const { return diffuse_image; }
+  rendergraph::ImageResourceId get_specular() const { return specular_image; }
+
+private:
+  gpu::ComputePipeline pipeline;
+  
+  rendergraph::ImageResourceId diffuse_image;
+  rendergraph::ImageResourceId specular_image;
+};
+
+struct LightResolvePass {
+  LightResolvePass(rendergraph::RenderGraph &graph);
+
+  void run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DiffuseSpecularPass &diff_spec,
+           rendergraph::ImageResourceId reflections, rendergraph::ImageResourceId final_image, const DrawTAAParams &params);
+
+  void ui();
+
+private:
+  gpu::GraphicsPipeline pipeline;
+
+  float reflectiveness = 0.f;
+};
 
 #endif

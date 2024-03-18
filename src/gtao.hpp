@@ -4,6 +4,7 @@
 #include "scene/camera.hpp"
 #include "rendergraph/rendergraph.hpp"
 #include "scene_renderer.hpp"
+#include "depth_as.hpp"
 
 #define GTAO_TRACE_SAMPLES 0
 
@@ -62,6 +63,14 @@ struct GTAO {
     const GTAOParams &params,
     rendergraph::ImageResourceId depth);
 
+  void add_depth_rt_pass(
+    rendergraph::RenderGraph &graph,
+    const DrawTAAParams &params,
+    rendergraph::ImageResourceId normals,
+    rendergraph::ImageResourceId depth,
+    VkAccelerationStructureKHR depth_as
+  );
+
   void add_reprojection_pass(
     rendergraph::RenderGraph &graph,
     const GTAOReprojection &params,
@@ -101,6 +110,8 @@ private:
   gpu::ComputePipeline filter_pipeline;
   gpu::ComputePipeline reproject_pipeline;
   gpu::ComputePipeline accumulate_pipeline;
+
+  gpu::ComputePipeline depth_as_rt_pipeline;
 
   gpu::ComputePipeline deinterleave_pipeline;
   gpu::ComputePipeline main_deinterleaved_pipeline;

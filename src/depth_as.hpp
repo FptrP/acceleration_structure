@@ -36,7 +36,7 @@ struct DepthAs {
 
   void close();
   void create(gpu::TransferCmdPool &cmd_pool, uint32_t width, uint32_t height);
-  void update(VkCommandBuffer cmd, uint32_t num_primitives, const gpu::BufferPtr &src);
+  void update(VkCommandBuffer cmd, uint32_t num_primitives, const gpu::BufferPtr &src, bool rebuild = false);
 
   VkAccelerationStructureKHR get_blas() const {
     return blas;
@@ -65,6 +65,7 @@ struct DepthAsBuilder {
 private:
   gpu::ComputePipeline pipeline;
   gpu::BufferPtr aabb_storage;
+  bool rebuild = true;
 };
 
 struct UniqTriangleIDExtractor {

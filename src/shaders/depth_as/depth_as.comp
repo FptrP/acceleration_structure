@@ -37,15 +37,15 @@ void main() {
   vec2 uv_top = (vec2(pixel_pos))/tex_size;
   vec2 uv_bot = (vec2(pixel_pos) + vec2(1.0, 1.0))/tex_size;
 
-  vec3 top = reconstruct_view_vec(uv_top, depth, fovy, aspect, znear, zfar);
-  vec3 bot = reconstruct_view_vec(uv_bot, depth, fovy, aspect, znear, zfar);
-  const float THIKNESS = 0.1;
-  bot.z -= THIKNESS;
-  top.z -= 0.005;
+  vec3 camera = reconstruct_view_vec(uv, depth, fovy, aspect, znear, zfar);
+  float camera_len = length(camera);
+  
+  const float THIKNESS = 0.15;
+  
+  camera = (camera_len + THIKNESS) * normalize(camera);
+  float camera_depth = encode_depth(camera.z, znear, zfar);
 
-  vec3 vmin = min(top, bot);
-  vec3 vmax = max(top, bot); 
-
-  VkAABB aabb = VkAABB(vmin.x, vmin.y, vmin.z, vmax.x, vmax.y, vmax.z);
+  //VkAABB aabb = VkAABB(vmin.x, vmin.y, vmin.z, vmax.x, vmax.y, vmax.z);
+  VkAABB aabb = VkAABB(uv_top.x, uv_top.y, depth, uv_bot.x, uv_bot.y, camera_depth);
   aabbs[offset] = aabb;
 }

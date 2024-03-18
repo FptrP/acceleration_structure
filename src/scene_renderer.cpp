@@ -189,7 +189,7 @@ void SceneRenderer::init_pipeline(rendergraph::RenderGraph &graph, const Gbuffer
   triangle_id_pipeline = gpu::create_graphics_pipeline();
   triangle_id_pipeline.set_program("gbuf_triangle_id");
   triangle_id_pipeline.set_registers(regs);
-  triangle_id_pipeline.set_vertex_input(scene::get_vertex_input_shadow());
+  triangle_id_pipeline.set_vertex_input(scene::get_vertex_input_pos_uv());
   triangle_id_pipeline.set_rendersubpass({true, {
     VK_FORMAT_R32_UINT,
     VK_FORMAT_D24_UNORM_S8_UINT
@@ -359,6 +359,7 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
   struct PushData {
     uint32_t transform_index;
     uint32_t drawcall_index;
+    uint32_t alpha_tex_index;
   };
 
   struct GbufConst {
@@ -396,6 +397,7 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
         gpu::UBOBinding {1, cmd.get_ubo_pool(), blk});
 
       cmd.bind_descriptors_graphics(0, {set}, {blk.offset});
+      cmd.bind_descriptors_graphics(1, {bindless_textures}, {});
       cmd.bind_vertex_buffers(0, {target.vertex_buffer->api_buffer()}, {0ul});
       cmd.bind_index_buffer(target.index_buffer->api_buffer(), 0, VK_INDEX_TYPE_UINT32);
 
@@ -403,12 +405,14 @@ void SceneRenderer::rasterize_triange_id(rendergraph::RenderGraph &graph, const 
 
       for (const auto &draw_call : draw_calls) {
         const auto &prim = target.primitives[draw_call.primitive];
+        const auto &mat = target.materials[prim.material_index];
 
         PushData pc {};
         pc.transform_index = draw_call.transform;
         pc.drawcall_index = drawcall_id;
-        
-        cmd.push_constants_graphics(VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushData), &pc);
+        pc.alpha_tex_index = mat.clip_alpha? mat.albedo_tex_index : 0xffffffff;
+
+        cmd.push_constants_graphics(VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushData), &pc);
         cmd.draw_indexed(prim.index_count, 1, prim.index_offset, prim.vertex_offset, 0);
         drawcall_id++;
       }

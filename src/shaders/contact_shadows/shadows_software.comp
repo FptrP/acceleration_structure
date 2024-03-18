@@ -1,5 +1,6 @@
 #version 460
 #include <gbuffer_encode.glsl>
+#include <screen_trace.glsl>
 
 layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
 layout (set = 0, binding = 1, r8) uniform writeonly image2D OUT_SHADOW; 
@@ -28,13 +29,32 @@ layout (set = 0, binding = 3) uniform LightsBuffer {
 const int GROUP_X = 8;
 const int GROUP_Y = 4;
 
+layout (push_constant) uniform randomData {
+  //uint seed;
+  float offsets[32];
+};
+
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
 
 float random(vec2 st)
 {
   return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
 }
 
-bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter);
+bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter, vec2 random_offset);
+bool trace_light_hiz(in vec3 light_pos, in vec3 view_vec, float jitter);
 
 layout (local_size_x = GROUP_X, local_size_y = GROUP_Y) in;
 void main()
@@ -52,23 +72,34 @@ void main()
   float jitter = random(screen_uv);
   
   float occlusion = 0.f;
+  
+  uint random_index = 2 * uint(random(pixel_pos) * 15.99);  
 
   for (uint i = 0; i < MAX_LIGHTS; i++) {
     vec3 light_pos = vec3(camera_mat * g_lights[i].position);
-    occlusion += trace_light_source(light_pos, view_vec, jitter)? 0.f : (1.f/MAX_LIGHTS);
+    occlusion += trace_light_source(light_pos, view_vec, jitter, vec2(offsets[random_index], offsets[random_index + 1]))? 0.f : (1.f/MAX_LIGHTS);
+    //occlusion += trace_light_hiz(light_pos, view_vec * 0.98, jitter)? 0.f : (1.f/MAX_LIGHTS);
+    random_index = (random_index + 2) % 32;
   }
-
 
   imageStore(OUT_SHADOW, pixel_pos, vec4(occlusion, 0.f, 0.f, 0.f));
 }
 
-bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter) {
+bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter, vec2 random_offset) {
   const uint NUM_SAMPLES = 30;
-  const float THIKNESS = 0.3;
+  const float THIKNESS = 0.15;
   const float RAND_STEP = 0.1;
 
   vec3 direction = normalize(light_pos - view_vec);
   
+  vec3 tangent = get_tangent(-direction);
+  vec3 bitangent = normalize(cross(-direction, tangent));
+  tangent = normalize(cross(bitangent, -direction));
+  
+  random_offset *= 0.03;
+  direction = normalize(direction + tangent * random_offset.x + bitangent * random_offset.y);
+
+
   direction /= NUM_SAMPLES;
 
   bool occluded = false;
@@ -86,7 +117,7 @@ bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter) {
       if (dot(delta, delta) < THIKNESS * THIKNESS) {
         occluded = true;
         break;
-      }
+      } 
     }
 
     float jitter = random(S.xy);
@@ -94,4 +125,34 @@ bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter) {
     //P += direction;
   }
   return occluded;
+}
+
+bool trace_light_hiz(in vec3 light_pos, in vec3 view_vec, float jitter) {
+  vec3 ray_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+
+  vec3 camera_dir = normalize(light_pos - view_vec);
+  vec3 camera_end = view_vec + camera_dir;
+
+  vec3 ray_end = project_view_vec(camera_end, fovy, aspect, znear, zfar);
+  vec3 ray_dir = ray_end - ray_start;
+
+  bool valid_hit = false;
+  vec3 res = hierarchical_raymarch(DEPTH_TEX, ray_start, ray_dir, 0, 80, valid_hit);
+
+  if (valid_hit) {
+    float t = dot(res - ray_start, ray_dir)/dot(ray_dir, ray_dir);
+    if (t < 0 || t > 1)
+      valid_hit = false;
+  }
+
+  if (valid_hit) {  
+    float hit_depth = textureLod(DEPTH_TEX, res.xy, 0).x;
+    float hit_z = linearize_depth2(hit_depth, znear, zfar);
+    float ray_z = linearize_depth2(res.z, znear, zfar);
+    if (ray_z > hit_z + 0.3 || ray_z < hit_z - 0.1) {
+      valid_hit = false;
+    }
+  }
+
+  return valid_hit;
 }

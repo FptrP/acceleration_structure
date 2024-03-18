@@ -1,0 +1,233 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+#include <screen_trace.glsl>
+#include <brdf.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH;
+layout (set = 0, binding = 1) uniform sampler2D NORMAL;
+layout (set = 0, binding = 2) uniform sampler2D MATERIAL;
+
+layout (set = 0, binding = 3) uniform TraceParams {
+  mat4 normal_mat;
+  uint frame_random;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+#define M_PI 3.1415926535897932384626433832795
+#define HALTON_SEQ_SIZE 128
+
+layout (set = 0, binding = 4) uniform HaltonBuffer {
+  vec4 halton_vec[HALTON_SEQ_SIZE];
+};
+
+layout (set = 0, binding = 5) uniform accelerationStructureEXT DEPTH_AS;
+
+layout (push_constant) uniform PushConstants {
+  float max_roughness;
+};
+
+vec3 get_tangent(in vec3 n);
+bool find_correct_hit(vec3 ray_start, vec3 ray_dir, vec2 tex_size, ivec2 first_hit, out vec3 out_hit_pos, out float out_t);
+
+layout (set = 0, binding = 6, rgba16) uniform image2D OUT_RAY;
+
+float rand(vec2 co);
+
+layout (local_size_x = 8, local_size_y = 8) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_RAY);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (pixel_pos.x >= tex_size.x || pixel_pos.y >= tex_size.y) {
+    return;
+  }
+  vec3 material = texture(MATERIAL, screen_uv).rgb;
+
+  float roughness = material.g;
+  material.g = mix(0.0, max_roughness, roughness);
+  roughness = material.g * material.g;
+
+  float pixel_depth = texture(DEPTH, screen_uv).x;
+  vec3 pixel_normal_world = sample_gbuffer_normal(NORMAL, screen_uv);
+  vec3 pixel_normal = normalize((normal_mat * vec4(pixel_normal_world, 0)).xyz);
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+
+  //halton random
+  const uint base_index = uint(rand(screen_uv) * HALTON_SEQ_SIZE);
+  uint index = (base_index + frame_random) & (HALTON_SEQ_SIZE - 1);
+  vec2 rnd = halton_vec[index].xy;
+  //sample microphaset normal 
+  vec3 tangent = get_tangent(pixel_normal);
+  vec3 bitangent = normalize(cross(pixel_normal, tangent));
+  tangent = normalize(cross(bitangent, pixel_normal));
+
+  vec3 view_dir = -normalize(view_vec); //e = (tangent, bitangent, normal)
+  view_dir = vec3(
+    dot(view_dir, tangent),
+    dot(view_dir, bitangent),
+    dot(view_dir, pixel_normal));
+
+  vec3 brdf_norm = sampleGGXVNDF(view_dir, roughness, roughness, rnd.x, rnd.y);
+  vec3 N = brdf_norm.x * tangent + brdf_norm.y * bitangent + brdf_norm.z * pixel_normal;
+  vec3 R = reflect(view_vec, N); 
+  
+  view_vec = 0.98 * view_vec;
+  vec3 ray_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+  vec3 ray_dir = project_view_vec(view_vec + R, fovy, aspect, znear, zfar);
+  ray_dir -= ray_start;
+  ray_dir *= (1-ray_start.z)/abs(ray_dir.z);
+
+  bool valid_hit = false;
+  ivec2 hit_pixel = ivec2(0, 0);
+  
+  rayQueryEXT ray_query;
+	rayQueryInitializeEXT(ray_query, DEPTH_AS, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, ray_start, 0.001, ray_dir, 1.0);
+
+  rayQueryProceedEXT(ray_query);
+
+  /*while (rayQueryProceedEXT(ray_query))*/ {
+    if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
+      int primitive_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false); 
+      
+      hit_pixel = ivec2(primitive_id % tex_size.x, primitive_id/tex_size.x);
+      valid_hit = true;
+      //break;
+    }
+  }
+
+  rayQueryTerminateEXT(ray_query);
+  
+  vec3 out_ray = ray_start;
+
+  if (valid_hit) {
+    float t;
+    valid_hit = find_correct_hit(ray_start, ray_dir, tex_size, hit_pixel, out_ray, t);
+    vec2 ray_step = abs(out_ray.xy - ray_start.xy) * tex_size;
+    if (max(ray_step.x, ray_step.y) < 3.0) {
+      valid_hit = false;
+    }
+  }
+
+  if (valid_hit)
+  {
+    vec3 hit_normal_world = sample_gbuffer_normal(NORMAL, out_ray.xy);
+    vec3 hit_normal = (normal_mat * vec4(hit_normal_world, 0)).xyz;
+
+    if (dot(hit_normal, R) > 0 || dot(pixel_normal, R) < 0) {
+      valid_hit = false;
+    }
+  }
+
+  
+  vec4 out_ray_info = vec4(0, 0, 1, 1);
+  out_ray_info = vec4(out_ray, valid_hit? pixel_depth : 1.0);
+  imageStore(OUT_RAY, pixel_pos, out_ray_info);
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
+
+float rand(vec2 co){
+  return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+float distance_squared(vec3 a, vec3 b) {
+  vec3 c = b - a;
+  return dot(c, c);
+}
+
+float ray_pixel_intersect(vec3 ray_start, vec3 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right, float pixel_depth) {
+  float x_coord = (ray_dir.x >= 0)? pixel_top_left.x : pixel_bot_right.x;
+  float y_coord = (ray_dir.y >= 0)? pixel_top_left.y : pixel_bot_right.y;
+
+  float t1 = (x_coord - ray_start.x)/ray_dir.x;
+  float y1 = ray_start.y + t1 * ray_dir.y;
+  if (y1 < pixel_top_left.y || y1 > pixel_bot_right.y || t1 < 0)
+    t1 = 1e20;
+
+  float t2 = (y_coord - ray_start.y)/ray_dir.y;
+  float x2 = ray_start.x + t2 * ray_dir.x;
+  if (x2 < pixel_top_left.x || x2 > pixel_bot_right.x  || t2 < 0)
+    t2 = 1e20;
+  
+  float t = min(t1, t2);
+
+  if (t > 1000)
+    t = -1;
+  //check pixel corner
+
+  if (t > 0 && ray_start.z + t * ray_dir.z >= pixel_depth)
+    return t;
+
+  float t3 = (pixel_depth - ray_start.z)/ray_dir.z; //check depth intersection
+  vec2 p = ray_start.xy + t3 * ray_dir.xy;
+  if (t3 > 0 && all(greaterThanEqual(p, pixel_top_left)) && all(lessThan(p, pixel_bot_right)))
+    return t3;
+  
+  return -1;
+}
+
+float ray_pixel_intersect2(vec3 ray_start, vec3 ray_dir, vec2 pixel_top_left, vec2 pixel_bot_right, float pixel_depth) {
+  float tx1 = (pixel_top_left.x - ray_start.x)/ray_dir.x;
+  float tx2 = (pixel_bot_right.x - ray_start.x)/ray_dir.x;
+
+  float tmin = min(tx1, tx2);
+  float tmax = max(tx1, tx2);
+
+  float ty1 = (pixel_top_left.y - ray_start.y)/ray_dir.y;
+  float ty2 = (pixel_bot_right.y - ray_start.y)/ray_dir.y;
+
+  tmin = max(tmin, min(ty1, ty2));
+  tmax = min(tmax, max(ty1, ty2));
+
+  if (tmax >= tmin && ray_start.z + tmin * ray_dir.z >= pixel_depth)
+    return tmin;
+
+  float tz = (pixel_depth - ray_start.z)/ray_dir.z;
+  
+  tmin = max(tmin, tz);
+  tmax = min(tmax, tz);
+
+  return (tmax >= tmin)? tmin : -1.f;
+}
+
+
+bool find_correct_hit(vec3 ray_start, vec3 ray_dir, vec2 tex_size, ivec2 first_hit, out vec3 out_hit_pos, out float out_t) {
+
+  vec2 hit_center = (vec2(first_hit) + vec2(0.5, 0.5))/tex_size; 
+  vec2 hit_top = vec2(first_hit)/tex_size;
+  vec2 hit_bot = (vec2(first_hit) + vec2(1, 1))/tex_size;
+  float hit_depth = textureLod(DEPTH, hit_center, 0).x;
+
+  float t = ray_pixel_intersect2(ray_start, ray_dir, hit_top, hit_bot, hit_depth);
+
+  if (t > 0) {
+    out_t = t;
+    out_hit_pos = ray_start + t * ray_dir;
+
+    float ray_depth = ray_start.z + t * ray_dir.z;
+
+    float ray_z = linearize_depth2(ray_depth, znear, zfar);
+    float scene_z = linearize_depth2(hit_depth, znear, zfar);
+
+    if (ray_z + 0.1 < scene_z)
+      return false;
+    
+    return true;
+  }
+  return false;
+}

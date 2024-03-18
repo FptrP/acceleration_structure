@@ -32,7 +32,7 @@ bool trace_light_source(in vec3 light_pos, in vec3 view_vec);
 
 const vec3 LIGHT_POS = vec3(0, 2, 0);
 
-layout (local_size_x = 8, local_size_y = 4) in;
+layout (local_size_x = 8, local_size_y = 8) in;
 void main()
 {
   ivec2 tex_size = imageSize(OUT_SHADOW);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);

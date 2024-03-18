@@ -2,6 +2,8 @@
 #include "util_passes.hpp"
 #include <iostream>
 
+const uint32_t ALIGNMENT = 128; //vulkaninfo | grep minAccelerationStructureScratchOffsetAlignment
+
 void TLASHolder::close() {
   auto device = gpu::app_device().api_device();
   if (tlas)
@@ -86,12 +88,12 @@ void TLASHolder::create(gpu::TransferCmdPool &cmd_pool, const std::vector<VkAcce
 
   VkAccelerationStructureBuildSizesInfoKHR out {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
   vkGetAccelerationStructureBuildSizesKHR(gpu::app_device().api_device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &data_info, &primitives, &out);
-  std::cout << "AS = " << out.accelerationStructureSize << " BuildScrath " << out.buildScratchSize << " UpdateScratch " << out.updateScratchSize << "\n";
+  std::cout << "TLAS = " << out.accelerationStructureSize << " BuildScrath " << out.buildScratchSize << " UpdateScratch " << out.updateScratchSize << "\n";
 
   tlas_storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
   
   if (out.updateScratchSize)
-    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
+    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -106,7 +108,7 @@ void TLASHolder::create(gpu::TransferCmdPool &cmd_pool, const std::vector<VkAcce
 
   VKCHECK(vkCreateAccelerationStructureKHR(gpu::app_device().api_device(), &create_info, nullptr, &tlas));
 
-  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
 
   data_info.dstAccelerationStructure = tlas;
   data_info.scratchData.deviceAddress = scratch_buffer->device_address();
@@ -254,17 +256,17 @@ void DepthAs::create_internal(uint32_t byte_size) {
 
 void DepthAs::create(gpu::TransferCmdPool &cmd_pool, uint32_t width, uint32_t height) {
   close();
-
+  
   auto sizes = get_build_sizes(width, height);
-
-  std::cout << "AS = " << sizes.accelerationStructureSize << " BuildScrath " << sizes.buildScratchSize << " UpdateScratch " << sizes.updateScratchSize << "\n";
+  
+  std::cout << "DEPTHAS = " << sizes.accelerationStructureSize << " BuildScrath " << sizes.buildScratchSize << " UpdateScratch " << sizes.updateScratchSize << "\n";
   
   create_internal(sizes.accelerationStructureSize);
 
   auto src_buffer = fill_data(width, height);
   if (sizes.updateScratchSize)
-    update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+    update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
+  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
 
   VkAccelerationStructureGeometryAabbsDataKHR aabbs {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR,
@@ -285,7 +287,7 @@ void DepthAs::create(gpu::TransferCmdPool &cmd_pool, uint32_t width, uint32_t he
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
     .pNext = nullptr,
     .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
     .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
     .srcAccelerationStructure = nullptr,
     .dstAccelerationStructure = blas,
@@ -344,7 +346,7 @@ static void push_rw_barrier(VkCommandBuffer cmd) {
     0, 1, &aa_memory_barrier, 0, nullptr, 0, nullptr);
 }
 
-void DepthAs::update(VkCommandBuffer cmd, uint32_t num_primitives, const gpu::BufferPtr &src) {
+void DepthAs::update(VkCommandBuffer cmd, uint32_t num_primitives, const gpu::BufferPtr &src, bool rebuild) {
   VkAccelerationStructureGeometryAabbsDataKHR aabbs {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR,
     .pNext = nullptr,
@@ -364,8 +366,8 @@ void DepthAs::update(VkCommandBuffer cmd, uint32_t num_primitives, const gpu::Bu
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
     .pNext = nullptr,
     .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
-    .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
+    .flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
+    .mode = rebuild? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR,
     .srcAccelerationStructure = blas,
     .dstAccelerationStructure = blas,
     .geometryCount = 1,
@@ -445,8 +447,8 @@ void DepthAsBuilder::run(rendergraph::RenderGraph &graph, DepthAs &depth_as, ren
 
     push_wr_barrier(api_cmd);  
     
-    depth_as.update(api_cmd, extent.width * extent.height, aabb_storage);
-
+    depth_as.update(api_cmd, extent.width * extent.height, aabb_storage, rebuild);
+    rebuild = false;
     push_wr_barrier(api_cmd);
   });
 }
@@ -660,9 +662,9 @@ void TriangleAS::create(gpu::TransferCmdPool &ctx, uint32_t max_triangles_count)
   blas_storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
   if (out.updateScratchSize)
-    blas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
+    blas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
 
-  auto blas_build_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, 128);
+  auto blas_build_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,

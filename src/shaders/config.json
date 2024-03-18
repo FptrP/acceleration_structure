@@ -26,6 +26,13 @@
     "vertex" : "defered_shading/shader_vert",
     "fragment" : "defered_shading/shader_frag"
   },
+  "diffuse_specular_pass" : {
+    "compute" : "lighting/diffuse_spec_pass_comp"
+  },
+  "light_resolve_pass" : {
+    "vertex" : "lighting/resolve_vert",
+    "fragment" : "lighting/resolve_frag"
+  },
   "default_shadow" : {
     "vertex" : "shadows/default_vert",
     "fragment" : "shadows/default_frag"
@@ -44,6 +51,9 @@
   "gtao_rt_main" : {
     "vertex" : "gtao/main_vert",
     "fragment" : "gtao/rt_main_frag"
+  },
+  "depth_rt_ao" : {
+    "compute" : "gtao/depth_rt_ao_comp"
   },
   "gtao_filter" : {
     "compute" : "gtao/filter_comp"
@@ -107,6 +117,9 @@
   },
   "sssr_trace_as" : {
     "compute" : "advanced_ssr/trace_as_comp"
+  },
+  "sssr_trace_depth_as" : {
+    "compute" : "advanced_ssr/trace_depth_as_comp"
   },
   "sssr_trace_indirect" : {
     "compute" : "advanced_ssr/trace_indirect_comp"
@@ -174,8 +187,14 @@
   "contact_shadows_hardware" : {
     "compute" : "contact_shadows/shadows_hardware_comp"
   },
+  "contact_shadows_hardware_depth" : {
+    "compute" : "contact_shadows/shadows_hardware_depth_comp"
+  },
   "draw_lights" : {
     "vertex" : "lights/lights_vert",
     "fragment" : "lights/lights_frag"
+  },
+  "indirect_light_trace_software" : {
+    "compute" : "indirect_light/trace_software_comp"
   }
 }

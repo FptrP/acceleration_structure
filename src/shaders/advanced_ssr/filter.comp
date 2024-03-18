@@ -125,7 +125,11 @@ void process_pixel(ivec2 pixel_pos, in vec2 tex_size, in vec3 F0, float roughnes
   pixel_normal = vec3(normal_mat * vec4(pixel_normal, 0));
 
   vec3 hit_vec = reconstruct_view_vec(trace_result.xy, trace_result.z, fovy, aspect, znear, zfar);
-  vec3 radiance = is_valid_ray(trace_result)? texture(ALBEDO_TEX, trace_result.xy).xyz : vec3(0);
+  bool ray_valid = is_valid_ray(trace_result);
+  if (!ray_valid)
+    return;
+
+  vec3 radiance = ray_valid? texture(ALBEDO_TEX, trace_result.xy).xyz : vec3(0);
   //float light_dist = length(hit_vec - view_vec); 
   //radiance *= clamp(10/(light_dist*light_dist + 0.001), 0.2, 3);
 

@@ -1,0 +1,134 @@
+#version 460
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+#include <gbuffer_encode.glsl>
+
+layout (set = 0, binding = 0) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 1, r8) uniform writeonly image2D OUT_SHADOW; 
+
+layout (set = 0, binding = 2) uniform Constants {
+  mat4 camera_mat;
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+};
+
+layout (set = 0, binding = 3) uniform accelerationStructureEXT DEPTH_AS;
+
+#define MAX_LIGHTS 5
+
+struct Light {
+  vec4 position;
+  vec4 color;
+};
+
+layout (set = 0, binding = 4) uniform LightsBuffer {
+  Light g_lights[MAX_LIGHTS];
+};
+
+layout (push_constant) uniform randomData {
+  //uint seed;
+  float offsets[32];
+};
+
+
+bool trace_light_source(in vec3 light_pos, in vec3 view_vec, vec2 random_offset);
+vec3 get_tangent(in vec3 n);
+float rand(vec2 co) {
+  return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+layout (local_size_x = 8, local_size_y = 8) in;
+void main()
+{
+  ivec2 tex_size = imageSize(OUT_SHADOW);//ivec2(gl_NumWorkGroups.xy * gl_WorkGroupSize.xy);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (pixel_pos.x >= tex_size.x || pixel_pos.y >= tex_size.y) {
+    return;
+  }
+
+  float pixel_depth = texture(DEPTH_TEX, screen_uv).x;
+  vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+  
+  view_vec *= 0.99;
+  
+  float occlusion = 0.f;
+  
+  uint random_index = 2 * uint(rand(pixel_pos) * 15.99);  
+
+  for (uint i = 0; i < MAX_LIGHTS; i++) {
+    vec3 light_pos = vec3(camera_mat * g_lights[i].position);
+    occlusion += trace_light_source(light_pos, view_vec, vec2(offsets[random_index], offsets[random_index + 1]))? 0.f : (1.f/MAX_LIGHTS);
+    random_index = (random_index + 2) % 32;
+  }
+
+
+  imageStore(OUT_SHADOW, pixel_pos, vec4(occlusion, 0.f, 0.f, 0.f));
+}
+
+bool trace_light_source(in vec3 light_pos, vec3 view_vec, vec2 random_offset) {
+
+  vec3 direction = normalize(light_pos - view_vec);
+
+  vec3 tangent = get_tangent(-direction);
+  vec3 bitangent = normalize(cross(-direction, tangent));
+  tangent = normalize(cross(bitangent, -direction));
+  
+  random_offset *= 0.03;
+  direction = normalize(direction + tangent * random_offset.x + bitangent * random_offset.y);
+
+  vec3 ray_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+  vec3 ray_end = project_view_vec(view_vec + direction, fovy, aspect, znear, zfar);
+  vec3 ray_dir = ray_end - ray_start;
+
+  rayQueryEXT ray_query;
+	rayQueryInitializeEXT(ray_query, DEPTH_AS, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, ray_start, 0.000, ray_dir, 1.0);
+
+  bool any_hit = false;
+  uint hit_id = 0;
+  while (rayQueryProceedEXT(ray_query)) {
+    if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
+      hit_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false);
+      any_hit = true;
+      break;
+    }
+  }
+  
+  rayQueryTerminateEXT(ray_query);
+
+  ivec2 tex_size = textureSize(DEPTH_TEX, 0);
+  vec2 hit_pixel = vec2((hit_id % tex_size.x) + 0.5f, (hit_id/tex_size.x) + 0.5f)/vec2(tex_size);
+
+  float t = dot(hit_pixel - ray_start.xy, ray_dir.xy)/dot(ray_dir.xy, ray_dir.xy);
+
+  vec3 ssP = ray_start + t * ray_dir;
+  float scene_depth = texture(DEPTH_TEX, ssP.xy).x;
+
+  vec3 scene_ray = reconstruct_view_vec(ssP.xy, scene_depth, fovy, aspect, znear, zfar);
+  vec3 P = reconstruct_view_vec(ssP.xy, ssP.z, fovy, aspect, znear, zfar);
+  vec3 delta = P - scene_ray;
+  
+  const float THIKNESS = 0.3;
+  
+  if (dot(delta, delta) > THIKNESS * THIKNESS) {
+    any_hit = false;
+  } 
+
+  return any_hit;
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}

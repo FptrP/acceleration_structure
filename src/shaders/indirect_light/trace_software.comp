@@ -1,0 +1,142 @@
+#version 460
+#include "../include/gbuffer_encode.glsl"
+
+layout (set = 0, binding = 0) uniform sampler2D ALBEDO_TEX;
+layout (set = 0, binding = 1) uniform sampler2D DIFFUSE_TEX;
+
+layout (set = 0, binding = 2) uniform sampler2D DEPTH_TEX;
+layout (set = 0, binding = 3) uniform sampler2D NORMAL_TEX;
+
+layout (set = 0, binding = 4, rgba16f) uniform image2D OUT_TEX;
+
+layout (set = 0, binding = 5) uniform Constants {
+  mat4 normal_mat;
+  
+  float fovy;
+  float aspect;
+  float znear;
+  float zfar;
+
+  uint random_seed;
+  float rotation_offset;
+};
+
+#define MAX_RANDOM_VECTORS 64
+#define SAMPLES_PER_PIXEL 16
+
+layout (set = 0, binding = 6) uniform RandomVectors {
+  vec4 sample_offsets[MAX_RANDOM_VECTORS];
+};
+
+float random(vec2 v);
+vec3 get_tangent(in vec3 n);
+bool trace_direction(vec3 direction, in vec3 view_vec, float jitter, out vec3 out_hit);
+
+layout (local_size_x = 8, local_size_y = 4) in;
+void main() {
+  ivec2 tex_size = imageSize(OUT_TEX);
+  ivec2 pixel_pos = ivec2(gl_WorkGroupID.xy * gl_WorkGroupSize.xy + gl_LocalInvocationID.xy);
+  vec2 screen_uv = vec2(pixel_pos + vec2(0.5, 0.5))/vec2(tex_size);
+
+  if (pixel_pos.x >= tex_size.x || pixel_pos.y >= tex_size.y) {
+    return;
+  }
+
+  float depth = texture(DEPTH_TEX, screen_uv).x;
+
+  if (depth >= 1.f) {
+    imageStore(OUT_TEX, pixel_pos, vec4(0, 0, 0, 0));
+    return;
+  }
+
+  float angle = (1.0 / 16.0) * ((((pixel_pos.x + pixel_pos.y) & 3) << 2) + (pixel_pos.x & 3)) + rotation_offset;
+  uint start_sample = (random_seed + int(random(pixel_pos) * (MAX_RANDOM_VECTORS - 0.001))) % MAX_RANDOM_VECTORS;
+
+  vec3 N = sample_gbuffer_normal(NORMAL_TEX, screen_uv);
+  N = normalize(vec3(normal_mat * vec4(N, 0)));
+
+  vec3 tangent = get_tangent(N);
+  vec3 bitangent = normalize(cross(N, tangent));
+  tangent = normalize(cross(bitangent, N));
+
+  tangent = cos(angle) * tangent + sin(angle) * bitangent; //rotate basis
+  bitangent = normalize(cross(N, tangent)); 
+
+  vec3 accum_radiance = vec3(0, 0, 0);
+  float weight = 0.f;
+
+  vec3 view_vec = 0.99 * reconstruct_view_vec(screen_uv, depth, fovy, aspect, znear, zfar);
+  float jitter = random(screen_uv);
+
+  for (int i = 0; i < SAMPLES_PER_PIXEL; i++) {
+    vec3 roffset = sample_offsets[start_sample].xyz;
+    vec3 direction = normalize(tangent * roffset.x + bitangent * roffset.y + N * roffset.z); 
+    
+    vec3 hit_pos;
+
+    if (trace_direction(direction, view_vec, jitter, hit_pos)) {
+      weight += 1.f;
+      accum_radiance += texture(DIFFUSE_TEX, hit_pos.xy).xyz * max(dot(N, direction), 0.f); 
+    }
+    
+    start_sample = (start_sample + 1) % MAX_RANDOM_VECTORS;
+  }
+
+  if (weight > 0.f) {
+    accum_radiance /= weight;
+  }
+
+  vec3 albedo = texture(ALBEDO_TEX, screen_uv).xyz;
+  imageStore(OUT_TEX, pixel_pos, vec4(albedo * accum_radiance, 0));
+}
+
+float random(vec2 co) {
+  return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+vec3 get_tangent(in vec3 n) {
+  float max_xy = max(abs(n.x), abs(n.y));
+  vec3 t;
+  
+  if (max_xy < 0.00001) {
+    t = vec3(1, 0, 0);
+  } else {
+    t = vec3(n.y, -n.x, 0);
+  }
+
+  return normalize(t);
+}
+
+bool trace_direction(vec3 direction, in vec3 view_vec, float jitter, out vec3 out_hit) {
+  const uint NUM_SAMPLES = 30;
+  const float THIKNESS = 0.15;
+  const float RAND_STEP = 0.1;
+
+  direction /= NUM_SAMPLES;
+
+  bool intersection = false;
+  
+  vec3 P = view_vec + jitter * direction;
+  vec3 S = vec3(0, 0, 0);
+
+  for (uint i = 0; i <= NUM_SAMPLES; i++) {
+    S = project_view_vec(P, fovy, aspect, znear, zfar);
+
+    float scene_depth = texture(DEPTH_TEX, S.xy).x;
+
+    if (scene_depth + 1e-6 < S.z) {
+      vec3 scene_ray = reconstruct_view_vec(S.xy, scene_depth, fovy, aspect, znear, zfar);
+      vec3 delta = P - scene_ray;
+      if (dot(delta, delta) < THIKNESS * THIKNESS) {
+        intersection = true;
+        break;
+      } 
+    }
+
+    float jitter = random(S.xy);
+    P += (1 - RAND_STEP + RAND_STEP * jitter) * direction;
+  }
+
+  out_hit = S;
+  return intersection;
+}

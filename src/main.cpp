@@ -32,6 +32,7 @@ namespace fs = std::filesystem;
 #include "depth_as.hpp"
 #include "rtfx.hpp"
 #include "contact_shadows.hpp"
+#include "indirect_light.hpp"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <lib/stb_image_write.h>
@@ -217,10 +218,14 @@ static void load_shaders(const fs::path &config_path) {
 
 //const uint32_t WIDTH = 1280;
 //const uint32_t HEIGHT = 720;
+//const uint32_t WIDTH = 1366;
+//const uint32_t HEIGHT = 768;
 const uint32_t WIDTH = 1920;
 const uint32_t HEIGHT = 1080;
 //const uint32_t WIDTH = 2560;
 //const uint32_t HEIGHT = 1440;
+//const uint32_t WIDTH = 3840;
+//const uint32_t HEIGHT = 2160;
 
 rendergraph::ImageResourceId create_readbackimage(rendergraph::RenderGraph &graph) {
   gpu::ImageInfo image_info {VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, WIDTH, HEIGHT};
@@ -259,6 +264,7 @@ int main(int argc, char **argv) {
 
   bool use_rt_contact_shadows = false;
   bool use_rt_reflections = false;
+  bool show_ui = true;
 #if USE_RAY_QUERY
   bool use_rt_ao = false;
   scene::SceneAccelerationStructure acceleration_struct;
@@ -278,9 +284,19 @@ int main(int argc, char **argv) {
 
   SceneRenderer scene_renderer {scene};
   scene_renderer.init_pipeline(render_graph, gbuffer);
-  DeferedShadingPass shading_pass {render_graph, app_init.window};  
+  DeferedShadingPass shading_pass {render_graph, app_init.window};
+  DiffuseSpecularPass diffuse_specular_pass {render_graph, WIDTH, HEIGHT};
+  IndirectLight indirect_light {render_graph, WIDTH, HEIGHT};
+  LightResolvePass light_resolve_pass {render_graph};
+
   TriangleASBuilder triangle_as_builder {render_graph, transfer_pool};
   
+  DepthAs depth_as;
+  DepthAsBuilder depth_as_builder;
+
+  depth_as.create(transfer_pool, WIDTH/2, HEIGHT/2);
+  depth_as_builder.init(WIDTH/2, HEIGHT/2);
+
   LightsManager light_manager {render_graph};
   set_lights(light_manager);
   ContactShadows contact_shadows {};
@@ -315,12 +331,15 @@ int main(int argc, char **argv) {
     imgui_new_frame();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-      imgui_handle_event(event);
+      if (show_ui)
+        imgui_handle_event(event);
       
       if (event.type == SDL_QUIT) {
         quit = true;
       } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_r) {
         reload_request = true;
+      } else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_i) {
+        show_ui = !show_ui;
       } 
 
       camera.process_event(event);
@@ -340,7 +359,7 @@ int main(int argc, char **argv) {
 
     scene_renderer.update_scene();
     light_manager.update();
-    shading_pass.update_params(camera.get_view_mat(), shadow_mvp, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f);
+    //shading_pass.update_params(camera.get_view_mat(), shadow_mvp, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f);
     
     gpu_transfer::process_requests(render_graph);
 
@@ -352,6 +371,11 @@ int main(int argc, char **argv) {
     triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera, projection);
 
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
+
+    depth_as_builder.run(render_graph, depth_as, gbuffer.depth, 1, draw_params);
+    
+    //render_graph.submit();
+
 
     ImGui::Begin("Read texture");
     bool depth = ImGui::Button("Depth") && (image_read_back == INVALID_READBACK);
@@ -373,7 +397,8 @@ int main(int argc, char **argv) {
     light_manager.update_imgui();
     ssr.render_ui();
     gtao.draw_ui();
-    shading_pass.draw_ui();
+    light_resolve_pass.ui();
+    //shading_pass.draw_ui();
 
     auto normal_mat = glm::transpose(glm::inverse(camera.get_view_mat()));
     auto camera_to_world = glm::inverse(camera.get_view_mat());
@@ -381,11 +406,11 @@ int main(int argc, char **argv) {
     GTAORTParams gtao_rt_params {camera_to_world, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
     AdvancedSSRParams assr_params {normal_mat, glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};    
     
-    ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr);
-    
+
 #if USE_RAY_QUERY
     if (use_rt_ao) {
-      gtao.add_main_rt_pass(render_graph, gtao_rt_params, acceleration_struct.tlas, gbuffer.depth, gbuffer.normal);
+      gtao.add_depth_rt_pass(render_graph, draw_params, gbuffer.downsampled_normals, gbuffer.depth, depth_as.get_tlas());
+      //gtao.add_main_rt_pass(render_graph, gtao_rt_params, acceleration_struct.tlas, gbuffer.depth, gbuffer.normal);
     } else 
 #endif
     {
@@ -395,9 +420,18 @@ int main(int argc, char **argv) {
     gtao.add_filter_pass(render_graph, gtao_params, gbuffer.depth);
     gtao.add_accumulate_pass(render_graph, draw_params, gbuffer);
 
-    contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? triangle_as_builder.get_tlas() : nullptr);
+    //contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? triangle_as_builder.get_tlas() : nullptr);
+    contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? depth_as.get_tlas() : nullptr, true);
 
-    shading_pass.draw(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, ssr.get_preintegrated_brdf(), ssr.get_blurred(), light_manager, color_out_tex);
+    diffuse_specular_pass.run(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, draw_params, light_manager);
+
+    //ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr, false);
+    ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr, false);
+    //ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? depth_as.get_tlas() : nullptr, true);
+    //indirect_light.run(render_graph, gbuffer, diffuse_specular_pass.get_diffuse(), draw_params);
+
+    //shading_pass.draw(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, ssr.get_preintegrated_brdf(), ssr.get_blurred(), light_manager, color_out_tex);
+    light_resolve_pass.run(render_graph, gbuffer, diffuse_specular_pass, ssr.get_blurred(), color_out_tex, draw_params);
     taa_pass.run(render_graph, gbuffer, color_out_tex, draw_params);
     
     if (output_readback && image_read_back == INVALID_READBACK) {
@@ -407,10 +441,11 @@ int main(int argc, char **argv) {
     
     add_backbuffer_subpass(render_graph, taa_pass.get_output(), sampler, DrawTex::ShowAll);
     //add_backbuffer_subpass(render_graph, ssr.get_blurred(), sampler, DrawTex::ShowAll);
+    //add_backbuffer_subpass(render_graph, indirect_light.get(), sampler, DrawTex::ShowAll);
 
     light_manager.draw_lights(render_graph, render_graph.get_backbuffer(), gbuffer.depth, projection, draw_params);
 
-    add_present_subpass(render_graph);
+    add_present_subpass(render_graph, show_ui);
     render_graph.submit();
     readback_system.after_submit(render_graph);
 

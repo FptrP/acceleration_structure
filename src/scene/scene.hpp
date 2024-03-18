@@ -76,6 +76,7 @@ namespace scene {
 
   gpu::VertexInput get_vertex_input();
   gpu::VertexInput get_vertex_input_shadow();
+  gpu::VertexInput get_vertex_input_pos_uv();
 
   CompiledScene load_tinygltf_scene(gpu::TransferCmdPool &transfer_pool, const std::string &path, bool for_ray_traing = true);
   gpu::ImagePtr load_image_rgba8(gpu::TransferCmdPool &transfer_pool, const char *path);

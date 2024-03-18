@@ -23,8 +23,10 @@ struct AdvancedSSR {
     const AdvancedSSRParams &params,
     const DrawTAAParams &taa_params,
     const Gbuffer &gbuff,
+    rendergraph::ImageResourceId ssr_color,
     rendergraph::ImageResourceId ssr_occlusion,
-    VkAccelerationStructureKHR as = nullptr);
+    VkAccelerationStructureKHR as = nullptr,
+    bool depth_as = false);
 
   void preintegrate_pdf(rendergraph::RenderGraph &graph);
   void preintegrate_brdf(rendergraph::RenderGraph &graph);
@@ -47,6 +49,7 @@ private:
   
   gpu::ComputePipeline trace_pass;
   gpu::ComputePipeline trace_pass_as;
+  gpu::ComputePipeline trace_pass_depth_as;
   gpu::ComputePipeline filter_pass;
   gpu::ComputePipeline blur_pass;
   gpu::ComputePipeline classification_pass;
@@ -89,7 +92,8 @@ private:
     rendergraph::RenderGraph &graph,
     const AdvancedSSRParams &params,
     const Gbuffer &gbuff,
-    VkAccelerationStructureKHR acceleration_struct);
+    VkAccelerationStructureKHR acceleration_struct,
+    bool depth_as);
   
   void run_trace_indirect_pass(
     rendergraph::RenderGraph &graph,
@@ -98,6 +102,7 @@ private:
 
   void run_filter_pass(
     rendergraph::RenderGraph &graph,
+    rendergraph::ImageResourceId ssr_color,
     const AdvancedSSRParams &params,
     const Gbuffer &gbuff);
   

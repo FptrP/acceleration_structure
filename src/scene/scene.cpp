@@ -59,6 +59,28 @@ namespace scene {
     return vinput;
   }
 
+  gpu::VertexInput get_vertex_input_pos_uv() {
+    gpu::VertexInput vinput;
+
+    vinput.bindings = {{0, sizeof(scene::Vertex), VK_VERTEX_INPUT_RATE_VERTEX}};
+    vinput.attributes = {
+      {
+        .location = 0,
+        .binding = 0,
+        .format = VK_FORMAT_R32G32B32_SFLOAT,
+        .offset = offsetof(scene::Vertex, pos)
+      },
+      {
+        .location = 1,
+        .binding = 0,
+        .format = VK_FORMAT_R32G32_SFLOAT,
+        .offset = offsetof(scene::Vertex, uv)
+      }
+    };
+
+    return vinput;
+  }
+
   static void copy_data(gpu::TransferCmdPool &transfer_pool, gpu::BufferPtr &dst, gpu::BufferPtr &transfer, uint32_t byte_count, uint8_t *data) {
     
     VkCommandBufferBeginInfo begin_info {

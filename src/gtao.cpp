@@ -78,6 +78,8 @@ GTAO::GTAO(rendergraph::RenderGraph &graph, uint32_t width, uint32_t height, boo
   main_deinterleaved_pipeline = gpu::create_compute_pipeline();
   main_deinterleaved_pipeline.set_program("main_deinterleaved");
 
+  depth_as_rt_pipeline = gpu::create_compute_pipeline("depth_rt_ao");
+
   sampler = gpu::create_sampler(gpu::DEFAULT_SAMPLER);
 }
 
@@ -192,6 +194,63 @@ void GTAO::add_main_rt_pass(
       cmd.bind_descriptors_graphics(0, {set}, {block.offset, 0});
       cmd.draw(3, 1, 0, 0);
       cmd.end_renderpass();
+    });
+}
+
+void GTAO::add_depth_rt_pass(
+    rendergraph::RenderGraph &graph,
+    const DrawTAAParams &params,
+    rendergraph::ImageResourceId normal,
+    rendergraph::ImageResourceId depth,
+    VkAccelerationStructureKHR depth_as
+  )
+{
+  struct PassData {
+    rendergraph::ImageViewId out;
+    rendergraph::ImageViewId depth;
+    rendergraph::ImageViewId norm;
+  };
+
+  struct PassUBO {
+    glm::mat4 normal_mat;
+    float fovy;
+    float aspect;
+    float znear;
+    float zfar;
+  };
+
+  auto normal_mat = glm::transpose(glm::inverse(params.camera));
+
+  PassUBO pass_ubo {normal_mat, params.fovy_aspect_znear_zfar.x, params.fovy_aspect_znear_zfar.y, params.fovy_aspect_znear_zfar.z, params.fovy_aspect_znear_zfar.w}; 
+
+  float base_angle = rand()/float(RAND_MAX) - 0.5;
+
+  graph.add_task<PassData>("Depth_AS_ao",
+    [&](PassData &input, rendergraph::RenderGraphBuilder &builder){
+      input.depth = builder.sample_image(depth, VK_SHADER_STAGE_COMPUTE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, depth_lod, 1, 0, 1);
+      input.norm = builder.sample_image(normal, VK_SHADER_STAGE_COMPUTE_BIT);
+      input.out = builder.use_storage_image(raw, VK_SHADER_STAGE_COMPUTE_BIT, 0, 0);
+    },
+    [=](PassData &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
+      auto block = cmd.allocate_ubo<PassUBO>();
+      *block.ptr = pass_ubo;
+
+      auto set = resources.allocate_set(depth_as_rt_pipeline, 0);
+    
+      gpu::write_set(set,
+        gpu::UBOBinding {0, cmd.get_ubo_pool(), block},
+        gpu::TextureBinding {1, resources.get_view(input.depth), sampler},
+        gpu::TextureBinding {2, resources.get_view(input.norm), sampler},
+        gpu::AccelerationStructBinding {3, depth_as},
+        gpu::StorageTextureBinding {4, resources.get_view(input.out)},
+        gpu::UBOBinding {5, random_vectors}
+      );
+
+      const auto &extent = resources.get_image(input.out)->get_extent();
+      cmd.bind_pipeline(depth_as_rt_pipeline);
+      cmd.push_constants_compute(0, sizeof(float), &base_angle);
+      cmd.bind_descriptors_compute(0, {set}, {block.offset, 0});
+      cmd.dispatch((extent.width + 7)/8, (extent.height + 3)/4, 1);
     });
 }
 

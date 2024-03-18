@@ -33,7 +33,7 @@ layout (push_constant) uniform PushConstants {
 #include "trace_samples.glsl"
 
 #define RADIUS 0.01
-#define SAMPLES 20
+#define SAMPLES 10
 #define THIKNESS 0.05
 
 #define UNIFORM_AO 0

@@ -37,6 +37,7 @@ add_executable(main
   depth_as.cpp
   rtfx.cpp
   contact_shadows.cpp
+  indirect_light.cpp
   
   scene/scene.cpp
   scene/scene_as.cpp
