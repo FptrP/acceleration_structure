@@ -190,7 +190,9 @@ float gtao_camera_space(in ivec2 pos, in vec2 screen_uv, uint dirs_count) {
 
   vec3 camera_pos = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
   vec3 w0 = -normalize(camera_pos);
-  vec3 camera_normal = normalize((normal_mat * vec4(decode_normal(texture(gbuffer_normal, screen_uv).xy), 0)).xyz);
+
+  vec3 sampled_normal = sample_gbuffer_normal(gbuffer_normal, screen_uv);
+  vec3 camera_normal = normalize((normal_mat * vec4(sampled_normal, 0)).xyz);
 
   vec2 dir_radius = min(100.0/length(camera_pos), 16.0) / vec2(textureSize(depth, 0));
   float base_angle = gtao_direction(pos) + angle_offset; 

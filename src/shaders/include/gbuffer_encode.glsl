@@ -2,6 +2,10 @@
 #define GBUFFER_ENCODE_GLSL_INCLUDED
 
 
+#define NORMAL_ENCODED 1
+#define NORMAL_DEFAULT 0
+#define NORMAL_ENCODE_MODE NORMAL_DEFAULT 
+
 float sign_nz(in float k) {
   return (k >= 0.0) ? 1.0 : -1.0;
 }
@@ -36,11 +40,19 @@ vec3 decode_normal(in vec2 uv)
   return normalize(v);
 }
 
+
+#if NORMAL_ENCODE_MODE == NORMAL_DEFAULT
+vec3 sample_gbuffer_normal(in sampler2D normal_tex, in vec2 uv)
+{
+  return normalize(texture(normal_tex, uv).xyz); 
+}
+#else
 vec3 sample_gbuffer_normal(in sampler2D normal_tex, in vec2 uv)
 {
   vec2 t = texture(normal_tex, uv).xy;
   return decode_normal(t); 
 }
+#endif
 
 vec3 sample_gbuffer_normal_accurate(in sampler2D normal_tex, in vec2 uv)
 {

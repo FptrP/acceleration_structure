@@ -76,7 +76,7 @@ void main() {
   vec3 view_vec = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
   vec3 world_pos = (camera_to_world * vec4(view_vec, 1)).xyz;
   
-  vec3 normal = decode_normal(texture(gbuffer_normal, screen_uv).xy);
+  vec3 normal = sample_gbuffer_normal(gbuffer_normal, screen_uv);
   world_pos += 1e-5 * normal;
 
   vec3 tangent = get_tangent(normal);

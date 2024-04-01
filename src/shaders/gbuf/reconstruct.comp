@@ -36,7 +36,7 @@ layout (set = 0, binding = 6) uniform sampler2D DEPTH_TEX;
 layout (set = 0, binding = 7) uniform usampler2D TRIANGLE_ID_TEX;
 
 layout (set = 0, binding = 8, rgba8) uniform image2D ALBEDO_TEX;
-layout (set = 0, binding = 9, rg16) uniform image2D NORMAL_TEX;
+layout (set = 0, binding = 9, rgba16) uniform image2D NORMAL_TEX;
 layout (set = 0, binding = 10, rgba8) uniform image2D MATERIAL_TEX;
 layout (set = 0, binding = 11, rg16f) uniform image2D VELOCITY_TEX;
 
@@ -129,7 +129,12 @@ void main() {
   vec4 material_color = textureGrad(BINDLESS_MATERIAL_TEX[material.metalic_roughness_index], triangle_uv, duv_dx, duv_dy);
 
   imageStore(ALBEDO_TEX, pixel_pos, final_color);
+
+#if NORMAL_ENCODE_MODE == NORMAL_ENCODED
   imageStore(NORMAL_TEX, pixel_pos, vec4(encode_normal(normal), 0, 0));
+#else
+  imageStore(NORMAL_TEX, pixel_pos, vec4(normalize(normal), 0));
+#endif
   imageStore(MATERIAL_TEX, pixel_pos, material_color);
   imageStore(VELOCITY_TEX, pixel_pos, vec4(velocity_vector, 0, 0));
 }

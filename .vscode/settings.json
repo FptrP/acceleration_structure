@@ -76,5 +76,6 @@
     "valarray": "cpp",
     "filesystem": "cpp"
   },
-  "shaderc-lint.glslcArgs": "-I ${workspaceFolder}/src/shaders/include"
+  "shaderc-lint.glslcArgs": "-I ${workspaceFolder}/src/shaders/include",
+  "cSpell.enabled": false
 }

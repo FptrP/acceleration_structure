@@ -88,7 +88,7 @@ void main() {
   
   vec3 view_vec = reconstruct_view_vec(screen_uv, frag_depth, fovy, aspect, znear, zfar);
   
-  vec3 normal = decode_normal(texture(gbuffer_normal, screen_uv).xy);
+  vec3 normal = sample_gbuffer_normal(gbuffer_normal, screen_uv);// decode_normal(texture(gbuffer_normal, screen_uv).xy);
   normal = normalize(vec3(normal_mat * vec4(normal, 0)));
 
   view_vec = 0.98 * view_vec;

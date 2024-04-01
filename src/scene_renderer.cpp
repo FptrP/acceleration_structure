@@ -16,7 +16,7 @@ Gbuffer::Gbuffer(rendergraph::RenderGraph &graph, uint32_t width, uint32_t heigh
   uint32_t depth_mips = std::floor(std::log2(std::max(width, height))) + 1;
 
   gpu::ImageInfo albedo_info {VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
-  gpu::ImageInfo normal_info {VK_FORMAT_R16G16_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
+  gpu::ImageInfo normal_info {VK_FORMAT_R16G16B16A16_SNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
   gpu::ImageInfo velocity_info {VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
   gpu::ImageInfo mat_info {VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
   gpu::ImageInfo triangle_id_info {VK_FORMAT_R32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, width, height};
