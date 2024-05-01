@@ -264,6 +264,7 @@ int main(int argc, char **argv) {
 
   bool use_rt_contact_shadows = false;
   bool use_rt_reflections = false;
+  bool enable_screen_space_effects = true; 
   bool show_ui = true;
 #if USE_RAY_QUERY
   bool use_rt_ao = false;
@@ -316,10 +317,13 @@ int main(int argc, char **argv) {
   DrawTAAParams draw_params {};
   draw_params.prev_mvp = projection * camera.get_view_mat();
   draw_params.camera = camera.get_view_mat();
-
+  draw_params.fovy_aspect_znear_zfar = glm::vec4{glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
+  
   bool quit = false;
   auto ticks = SDL_GetTicks();
   
+  depth_as_builder.checkerboard_init(render_graph, depth_as, draw_params);
+
   render_graph.submit();
 
   clear_depth(render_graph, gbuffer.prev_depth);
@@ -354,7 +358,7 @@ int main(int argc, char **argv) {
     draw_params.mvp = projection * camera.get_view_mat();
     draw_params.prev_camera = draw_params.camera;
     draw_params.camera = camera.get_view_mat();
-    draw_params.fovy_aspect_znear_zfar = glm::vec4{glm::radians(60.f), float(WIDTH)/HEIGHT, 0.05f, 80.f};
+    
     draw_params.jitter = use_jitter? next_taa_offset(gbuffer.w, gbuffer.h) : glm::vec4{0.f, 0.f, 0.f, 0.f};
 
     scene_renderer.update_scene();
@@ -368,7 +372,7 @@ int main(int argc, char **argv) {
     scene_renderer.rasterize_triange_id(render_graph, gbuffer, draw_params);
     scene_renderer.reconstruct_gbuffer(render_graph, gbuffer, draw_params);
 
-    triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera, projection);
+    //triangle_as_builder.run(render_graph, scene_renderer, gbuffer.triangle_id, draw_params.camera, projection);
 
     downsample_pass.run(render_graph, gbuffer.normal, gbuffer.velocity_vectors, gbuffer.depth, gbuffer.downsampled_normals, gbuffer.downsampled_velocity_vectors);
 
@@ -392,6 +396,7 @@ int main(int argc, char **argv) {
     ImGui::Checkbox("Enable RT Contact shadows", &use_rt_contact_shadows);
     ImGui::Checkbox("Enable RT Reflection", &use_rt_reflections);
 #endif
+    ImGui::Checkbox("Enable screen space effects", &enable_screen_space_effects);
     ImGui::End();
 
     light_manager.update_imgui();
@@ -423,15 +428,15 @@ int main(int argc, char **argv) {
     //contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? triangle_as_builder.get_tlas() : nullptr);
     contact_shadows.run(render_graph, draw_params, light_manager, gbuffer.depth, use_rt_contact_shadows? depth_as.get_tlas() : nullptr, true);
 
-    diffuse_specular_pass.run(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, draw_params, light_manager);
+    diffuse_specular_pass.run(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, draw_params, light_manager, enable_screen_space_effects);
 
     //ssr.run(render_graph, assr_params, draw_params, gbuffer, gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr, false);
-    ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr, false);
-    //ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? depth_as.get_tlas() : nullptr, true);
+    //ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? triangle_as_builder.get_tlas() : nullptr, false);
+    ssr.run(render_graph, assr_params, draw_params, gbuffer, diffuse_specular_pass.get_diffuse(), gtao.raw, use_rt_reflections? depth_as.get_tlas() : nullptr, true);
     //indirect_light.run(render_graph, gbuffer, diffuse_specular_pass.get_diffuse(), draw_params);
 
     //shading_pass.draw(render_graph, gbuffer, contact_shadows.get_output(), gtao.accumulated_ao, ssr.get_preintegrated_brdf(), ssr.get_blurred(), light_manager, color_out_tex);
-    light_resolve_pass.run(render_graph, gbuffer, diffuse_specular_pass, ssr.get_blurred(), color_out_tex, draw_params);
+    light_resolve_pass.run(render_graph, gbuffer, diffuse_specular_pass, ssr.get_blurred(), color_out_tex, draw_params, enable_screen_space_effects);
     taa_pass.run(render_graph, gbuffer, color_out_tex, draw_params);
     
     if (output_readback && image_read_back == INVALID_READBACK) {

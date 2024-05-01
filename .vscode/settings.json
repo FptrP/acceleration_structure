@@ -74,7 +74,8 @@
     "typeindex": "cpp",
     "typeinfo": "cpp",
     "valarray": "cpp",
-    "filesystem": "cpp"
+    "filesystem": "cpp",
+    "__threading_support": "cpp"
   },
   "shaderc-lint.glslcArgs": "-I ${workspaceFolder}/src/shaders/include",
   "cSpell.enabled": false

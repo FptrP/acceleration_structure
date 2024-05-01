@@ -140,7 +140,8 @@ DiffuseSpecularPass::DiffuseSpecularPass(rendergraph::RenderGraph &graph, uint32
 }
   
 void DiffuseSpecularPass::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, rendergraph::ImageResourceId shadow,
-                              rendergraph::ImageResourceId occlusion, const DrawTAAParams &params, LightsManager &lights)
+                              rendergraph::ImageResourceId occlusion, const DrawTAAParams &params, LightsManager &lights,
+                               bool enable_ss)
 {
   struct Input {
     rendergraph::ImageViewId albedo;
@@ -161,8 +162,15 @@ void DiffuseSpecularPass::run(rendergraph::RenderGraph &graph, const Gbuffer &gb
     float zfar;
   };
 
+  struct PushConsts
+  {
+    uint32_t enable_effects;
+  };  
+
   UBO ubo_data {glm::inverse(params.camera), params.fovy_aspect_znear_zfar.x, params.fovy_aspect_znear_zfar.y, params.fovy_aspect_znear_zfar.z, params.fovy_aspect_znear_zfar.w};
   auto lights_buffer = lights.get_buffer();
+
+  PushConsts pc {.enable_effects = enable_ss? 1u : 0u};
 
   graph.add_task<Input>("DiffuseSpecularPass",
     [&](Input &input, rendergraph::RenderGraphBuilder &builder) {
@@ -200,7 +208,7 @@ void DiffuseSpecularPass::run(rendergraph::RenderGraph &graph, const Gbuffer &gb
       auto ext = resources.get_image(input.out_diffuse)->get_extent();
       cmd.bind_pipeline(pipeline);
       cmd.bind_descriptors_compute(0, {set}, {blk.offset, 0});
-      //cmd.push_constants_compute(0, sizeof(push_consts), &push_consts);
+      cmd.push_constants_compute(0, sizeof(pc), &pc);
       cmd.dispatch((ext.width + 7)/8, (ext.height + 3)/4, 1);
     });
 
@@ -217,7 +225,7 @@ LightResolvePass::LightResolvePass(rendergraph::RenderGraph &graph) {
 }
 
 void LightResolvePass::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuffer, const DiffuseSpecularPass &diff_spec,
-           rendergraph::ImageResourceId reflections, rendergraph::ImageResourceId final_image, const DrawTAAParams &params)
+           rendergraph::ImageResourceId reflections, rendergraph::ImageResourceId final_image, const DrawTAAParams &params, bool enable_ss)
 {
   pipeline.set_rendersubpass({false, {graph.get_descriptor(final_image).format}});
 
@@ -238,10 +246,11 @@ void LightResolvePass::run(rendergraph::RenderGraph &graph, const Gbuffer &gbuff
 
   struct PushConstants {
     float reflectiveness;
+    uint enable_ss;
   };
 
   Constants consts {glm::transpose(glm::inverse(params.camera)), params.fovy_aspect_znear_zfar.x, params.fovy_aspect_znear_zfar.y, params.fovy_aspect_znear_zfar.z, params.fovy_aspect_znear_zfar.w};
-  PushConstants pc {reflectiveness};
+  PushConstants pc {reflectiveness, enable_ss? 1u: 0u};
 
   graph.add_task<Input>("LightResolve",
     [&](Input &input, rendergraph::RenderGraphBuilder &builder) {

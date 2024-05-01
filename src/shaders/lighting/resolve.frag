@@ -24,6 +24,7 @@ layout (set = 0, binding = 6) uniform Constants {
 
 layout (push_constant) uniform PushConstants {
   float reflectiveness;
+  uint enable_screen_space;
 };
 
 void main() {
@@ -31,6 +32,9 @@ void main() {
   vec3 diffuse = texture(DIFFUSE_TEX, screen_uv).xyz;
   vec3 reflection = texture(REFLECTIONS_TEX, screen_uv).xyz;
   vec4 material = texture(MATERIAl_TEX, screen_uv);
+
+  if (enable_screen_space == 0)
+    reflection = vec3(0, 0, 0);
 
   vec3 N = sample_gbuffer_normal(NORMAL_TEX, screen_uv);
   N = normalize(vec3(normal_mat * vec4(N, 0)));

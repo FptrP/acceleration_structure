@@ -148,6 +148,9 @@
   "build_depth_as" : {
     "compute" : "depth_as/depth_as_comp"
   },
+  "init_depth_as" : {
+    "compute" : "depth_as/depth_as_init_comp"
+  },
   "trace_depth_as" : {
     "compute" : "depth_as/trace_rays_comp"
   },

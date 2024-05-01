@@ -61,9 +61,14 @@ struct DepthAsBuilder {
 
   void init(uint32_t width, uint32_t height);
   void run(rendergraph::RenderGraph &graph, DepthAs &depth_as, rendergraph::ImageResourceId depth, uint32_t mip, const DrawTAAParams &params);
+  void checkerboard_init(rendergraph::RenderGraph &graph, DepthAs &depth_as, const DrawTAAParams &params);
 
 private:
+  uint32_t dst_width = 0;
+  uint32_t dst_height = 0;
+  
   gpu::ComputePipeline pipeline;
+  gpu::ComputePipeline init_pipeline;
   gpu::BufferPtr aabb_storage;
   bool rebuild = true;
 };

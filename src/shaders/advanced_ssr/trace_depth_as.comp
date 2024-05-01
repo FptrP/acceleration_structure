@@ -75,8 +75,10 @@ void main() {
   vec3 N = brdf_norm.x * tangent + brdf_norm.y * bitangent + brdf_norm.z * pixel_normal;
   vec3 R = reflect(view_vec, N); 
   
-  view_vec = 0.98 * view_vec;
-  vec3 ray_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+  //view_vec = 0.98 * view_vec;
+  vec3 ray_start = project_view_vec(view_vec + 0.001 * pixel_normal, fovy, aspect, znear, zfar);
+  ray_start.z -= 0.0001;
+
   vec3 ray_dir = project_view_vec(view_vec + R, fovy, aspect, znear, zfar);
   ray_dir -= ray_start;
   ray_dir *= (1-ray_start.z)/abs(ray_dir.z);
@@ -87,15 +89,15 @@ void main() {
   rayQueryEXT ray_query;
 	rayQueryInitializeEXT(ray_query, DEPTH_AS, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, ray_start, 0.001, ray_dir, 1.0);
 
-  rayQueryProceedEXT(ray_query);
+  //rayQueryProceedEXT(ray_query);
 
-  /*while (rayQueryProceedEXT(ray_query))*/ {
+  while (rayQueryProceedEXT(ray_query)) {
     if (rayQueryGetIntersectionTypeEXT(ray_query, false) == gl_RayQueryCandidateIntersectionAABBEXT) {
       int primitive_id = rayQueryGetIntersectionPrimitiveIndexEXT(ray_query, false); 
       
       hit_pixel = ivec2(primitive_id % tex_size.x, primitive_id/tex_size.x);
       valid_hit = true;
-      //break;
+      break;
     }
   }
 

@@ -4,6 +4,8 @@
 
 const uint32_t ALIGNMENT = 128; //vulkaninfo | grep minAccelerationStructureScratchOffsetAlignment
 
+constexpr VkBufferCreateFlags SCRATCH_USAGE_FLAGS = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+
 void TLASHolder::close() {
   auto device = gpu::app_device().api_device();
   if (tlas)
@@ -93,7 +95,7 @@ void TLASHolder::create(gpu::TransferCmdPool &cmd_pool, const std::vector<VkAcce
   tlas_storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.accelerationStructureSize, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
   
   if (out.updateScratchSize)
-    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
+    tlas_update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.updateScratchSize, SCRATCH_USAGE_FLAGS, ALIGNMENT);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -108,7 +110,7 @@ void TLASHolder::create(gpu::TransferCmdPool &cmd_pool, const std::vector<VkAcce
 
   VKCHECK(vkCreateAccelerationStructureKHR(gpu::app_device().api_device(), &create_info, nullptr, &tlas));
 
-  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
+  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, out.buildScratchSize, SCRATCH_USAGE_FLAGS, ALIGNMENT);
 
   data_info.dstAccelerationStructure = tlas;
   data_info.scratchData.deviceAddress = scratch_buffer->device_address();
@@ -196,7 +198,7 @@ static VkAccelerationStructureBuildSizesInfoKHR get_build_sizes(uint32_t width, 
   VkAccelerationStructureBuildGeometryInfoKHR data_info {};
   data_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
   data_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-  data_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+  data_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
   data_info.geometryCount = 1;
   data_info.pGeometries = &geometry;
   //data_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
@@ -238,7 +240,7 @@ static gpu::BufferPtr fill_data(uint32_t width, uint32_t height) {
 
 void DepthAs::create_internal(uint32_t byte_size) {
   auto device = gpu::app_device().api_device();
-  storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, byte_size, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+  storage_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, byte_size, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
 
   VkAccelerationStructureCreateInfoKHR create_info {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -265,8 +267,8 @@ void DepthAs::create(gpu::TransferCmdPool &cmd_pool, uint32_t width, uint32_t he
 
   auto src_buffer = fill_data(width, height);
   if (sizes.updateScratchSize)
-    update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
-  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ALIGNMENT);
+    update_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, SCRATCH_USAGE_FLAGS, ALIGNMENT);
+  auto scratch_buffer = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizes.buildScratchSize, SCRATCH_USAGE_FLAGS, ALIGNMENT);
 
   VkAccelerationStructureGeometryAabbsDataKHR aabbs {
     .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR,
@@ -395,7 +397,11 @@ void DepthAsBuilder::init(uint32_t width, uint32_t height) {
   aabb_storage = gpu::create_buffer(VMA_MEMORY_USAGE_GPU_ONLY, sizeof(VkAabbPositionsKHR) * width * height,
     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT|VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
   
+  dst_width = width;
+  dst_height = height;
+
   pipeline = gpu::create_compute_pipeline("build_depth_as");
+  init_pipeline = gpu::create_compute_pipeline("init_depth_as");
 }
 
 static VkExtent3D calculate_mip(VkExtent3D src, uint32_t mip) {
@@ -451,6 +457,56 @@ void DepthAsBuilder::run(rendergraph::RenderGraph &graph, DepthAs &depth_as, ren
     rebuild = false;
     push_wr_barrier(api_cmd);
   });
+}
+
+void DepthAsBuilder::checkerboard_init(rendergraph::RenderGraph &graph, DepthAs &depth_as, const DrawTAAParams &params)
+{
+  struct Empty {};
+
+  struct PushConsts 
+  {
+    uint32_t width;
+    uint32_t height;
+    float fovy;
+    float aspect;
+    float znear;
+    float zfar;
+  } pc {
+    dst_width,
+    dst_height,
+    params.fovy_aspect_znear_zfar.x,
+    params.fovy_aspect_znear_zfar.y,
+    params.fovy_aspect_znear_zfar.z,
+    params.fovy_aspect_znear_zfar.w
+  };
+  
+  graph.add_task<Empty>("depthBlasInit",
+  [&](Empty &input, rendergraph::RenderGraphBuilder &builder){
+    //input.depth = builder.sample_image(depth, VK_SHADER_STAGE_COMPUTE_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, mip, 1, 0, 1);
+    //builder.use_storage_buffer(aabb_storage, VK_SHADER_STAGE_COMPUTE_BIT, false);
+  },
+  [=, &depth_as](Empty &input, rendergraph::RenderResources &resources, gpu::CmdContext &cmd){
+    auto api_cmd = cmd.get_command_buffer();
+
+    push_rw_barrier(api_cmd);
+
+    auto set = resources.allocate_set(init_pipeline.get_layout(0));
+    gpu::write_set(set,
+      gpu::SSBOBinding {0, aabb_storage});
+    
+    cmd.bind_pipeline(init_pipeline);
+    cmd.bind_descriptors_compute(0, {set});
+    cmd.push_constants_compute(0, sizeof(pc), &pc);
+    cmd.dispatch((pc.width + 7)/8, (pc.height + 3)/4, 1);
+
+
+    push_wr_barrier(api_cmd);  
+    
+    depth_as.update(api_cmd, pc.width * pc.height, aabb_storage, rebuild);
+    rebuild = false;
+    push_wr_barrier(api_cmd);
+  });
+
 }
 
 UniqTriangleIDExtractor::UniqTriangleIDExtractor(rendergraph::RenderGraph &graph) {
