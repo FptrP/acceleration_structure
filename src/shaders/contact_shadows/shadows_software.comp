@@ -25,6 +25,7 @@ layout (set = 0, binding = 3) uniform LightsBuffer {
 };
 
 
+layout (set = 0, binding = 4) uniform sampler2D NORMAL_TEX;
 
 const int GROUP_X = 8;
 const int GROUP_Y = 4;
@@ -69,6 +70,11 @@ void main()
 
   float pixel_depth = texture(DEPTH_TEX, screen_uv).x;
   vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
+
+  vec3 pixel_normal = sample_gbuffer_normal(NORMAL_TEX, screen_uv);
+  //view_vec += 1e-6 * pixel_normal;
+  view_vec *= 0.995;
+
   float jitter = random(screen_uv);
   
   float occlusion = 0.f;
@@ -87,7 +93,7 @@ void main()
 
 bool trace_light_source(in vec3 light_pos, in vec3 view_vec, float jitter, vec2 random_offset) {
   const uint NUM_SAMPLES = 30;
-  const float THIKNESS = 0.15;
+  const float THIKNESS = 0.3;
   const float RAND_STEP = 0.1;
 
   vec3 direction = normalize(light_pos - view_vec);

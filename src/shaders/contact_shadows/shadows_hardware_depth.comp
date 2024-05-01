@@ -27,15 +27,17 @@ layout (set = 0, binding = 4) uniform LightsBuffer {
   Light g_lights[MAX_LIGHTS];
 };
 
+layout (set = 0, binding = 5) uniform sampler2D NORMAL_TEX;
+
 layout (push_constant) uniform randomData {
   //uint seed;
   float offsets[32];
 };
 
 
-bool trace_light_source(in vec3 light_pos, in vec3 view_vec, vec2 random_offset);
+bool trace_light_source(vec3 light_pos, vec3 view_vec, vec3 camera_norm, float jitter, vec2 random_offset);
 vec3 get_tangent(in vec3 n);
-float rand(vec2 co) {
+float random(vec2 co) {
   return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
@@ -53,15 +55,28 @@ void main()
   float pixel_depth = texture(DEPTH_TEX, screen_uv).x;
   vec3 view_vec = reconstruct_view_vec(screen_uv, pixel_depth, fovy, aspect, znear, zfar);
   
-  view_vec *= 0.99;
+  vec3 pixel_normal = sample_gbuffer_normal(NORMAL_TEX, screen_uv);
+  
+
+  float jitter = random(screen_uv);
+  
+  vec3 camera_norm = vec3(0);
+
+  {
+    camera_norm = normalize(vec3(transpose(inverse(camera_mat)) * vec4(pixel_normal, 0.f)));
+  }
+  //iew_vec += 1e-6 * camera_norm;
+  view_vec *= 0.995;
   
   float occlusion = 0.f;
   
-  uint random_index = 2 * uint(rand(pixel_pos) * 15.99);  
+  uint random_index = 2 * uint(random(pixel_pos) * 15.99);  
 
   for (uint i = 0; i < MAX_LIGHTS; i++) {
+    
     vec3 light_pos = vec3(camera_mat * g_lights[i].position);
-    occlusion += trace_light_source(light_pos, view_vec, vec2(offsets[random_index], offsets[random_index + 1]))? 0.f : (1.f/MAX_LIGHTS);
+    
+    occlusion += trace_light_source(light_pos, view_vec, camera_norm, jitter, vec2(offsets[random_index], offsets[random_index + 1]))? 0.f : (1.f/MAX_LIGHTS);
     random_index = (random_index + 2) % 32;
   }
 
@@ -69,7 +84,19 @@ void main()
   imageStore(OUT_SHADOW, pixel_pos, vec4(occlusion, 0.f, 0.f, 0.f));
 }
 
-bool trace_light_source(in vec3 light_pos, vec3 view_vec, vec2 random_offset) {
+
+vec2 intersectAABB(vec2 rayOrigin, vec2 rayDir, vec2 boxMin, vec2 boxMax)
+{
+  vec2 tMin = (boxMin - rayOrigin) / rayDir;
+  vec2 tMax = (boxMax - rayOrigin) / rayDir;
+  vec2 t1 = min(tMin, tMax);
+  vec2 t2 = max(tMin, tMax);
+  float tNear = max(t1.x, t1.y);
+  float tFar = min(t2.x, t2.y);
+  return vec2(tNear, tFar);
+}
+
+bool trace_light_source(vec3 light_pos, vec3 view_vec, vec3 camera_norm, float jitter, vec2 random_offset) {
 
   vec3 direction = normalize(light_pos - view_vec);
 
@@ -80,7 +107,11 @@ bool trace_light_source(in vec3 light_pos, vec3 view_vec, vec2 random_offset) {
   random_offset *= 0.03;
   direction = normalize(direction + tangent * random_offset.x + bitangent * random_offset.y);
 
+  //jitter = max(jitter, 0.5f);
+  view_vec = view_vec + 0.5 * (1.f/30.f) * direction;
+
   vec3 ray_start = project_view_vec(view_vec, fovy, aspect, znear, zfar);
+  //ray_start.z -= 1e-6;
   vec3 ray_end = project_view_vec(view_vec + direction, fovy, aspect, znear, zfar);
   vec3 ray_dir = ray_end - ray_start;
 
@@ -98,24 +129,6 @@ bool trace_light_source(in vec3 light_pos, vec3 view_vec, vec2 random_offset) {
   }
   
   rayQueryTerminateEXT(ray_query);
-
-  ivec2 tex_size = textureSize(DEPTH_TEX, 0);
-  vec2 hit_pixel = vec2((hit_id % tex_size.x) + 0.5f, (hit_id/tex_size.x) + 0.5f)/vec2(tex_size);
-
-  float t = dot(hit_pixel - ray_start.xy, ray_dir.xy)/dot(ray_dir.xy, ray_dir.xy);
-
-  vec3 ssP = ray_start + t * ray_dir;
-  float scene_depth = texture(DEPTH_TEX, ssP.xy).x;
-
-  vec3 scene_ray = reconstruct_view_vec(ssP.xy, scene_depth, fovy, aspect, znear, zfar);
-  vec3 P = reconstruct_view_vec(ssP.xy, ssP.z, fovy, aspect, znear, zfar);
-  vec3 delta = P - scene_ray;
-  
-  const float THIKNESS = 0.3;
-  
-  if (dot(delta, delta) > THIKNESS * THIKNESS) {
-    any_hit = false;
-  } 
 
   return any_hit;
 }
